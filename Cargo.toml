@@ -23,11 +23,11 @@ homepage = "https://github.com/bearcove/snark"
 aho-corasick = "1.1.4"
 arborium-theme = "2.4.5"
 cc = "1.0.87"
-facet-styx = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
-gingembre-syntax = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
-rediff = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
-facet = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
-facet-json = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
+facet-styx = { git = "https://github.com/facet-rs/facet", rev = "dc57e24e381f0c61b4acfa242c368656a84348d4" }
+gingembre-syntax = { git = "https://github.com/facet-rs/facet", rev = "dc57e24e381f0c61b4acfa242c368656a84348d4" }
+rediff = { git = "https://github.com/facet-rs/facet", rev = "dc57e24e381f0c61b4acfa242c368656a84348d4" }
+facet = { git = "https://github.com/facet-rs/facet", rev = "dc57e24e381f0c61b4acfa242c368656a84348d4" }
+facet-json = { git = "https://github.com/facet-rs/facet", rev = "dc57e24e381f0c61b4acfa242c368656a84348d4" }
 indexmap = { version = "2.12.1", default-features = false }
 snark = { path = "snark", version = "0.0.1" }
 snark-dsl = { path = "snark-dsl" }
@@ -39,6 +39,12 @@ smallvec = { version = "1.15", default-features = false }
 unicode-width = "0.2.2"
 wasm-bindgen = "0.2"
 weavy = { git = "https://github.com/bearcove/weavy", rev = "5231e74c2532bc0fc6eb807b6b3f504e67ca6ac4" }
+
+[patch.crates-io]
+copypatch = { git = "https://github.com/bearcove/weavy", rev = "5231e74c2532bc0fc6eb807b6b3f504e67ca6ac4" }
+taxon = { git = "https://github.com/bearcove/weavy", rev = "5231e74c2532bc0fc6eb807b6b3f504e67ca6ac4" }
+weavy = { git = "https://github.com/bearcove/weavy", rev = "5231e74c2532bc0fc6eb807b6b3f504e67ca6ac4" }
+
 
 [workspace.lints.rust]
 
