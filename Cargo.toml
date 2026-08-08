@@ -38,10 +38,9 @@ regex-automata = { version = "0.4.14", default-features = false, features = ["st
 smallvec = { version = "1.15", default-features = false }
 unicode-width = "0.2.2"
 wasm-bindgen = "0.2"
-weavy = { git = "https://github.com/bearcove/weavy", rev = "0830c102a078697dc9e5f0d5a5e99c4f6b204871" }
+weavy = { git = "https://github.com/bearcove/weavy", rev = "dd02dc8663c58fc318a4b7be1998ab2480f868ec" }
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(facet_no_doc)", "cfg(kani)"] }
 
 [workspace.lints.clippy]
 disallowed_methods = "deny"
