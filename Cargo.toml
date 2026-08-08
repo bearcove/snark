@@ -23,8 +23,8 @@ homepage = "https://github.com/bearcove/snark"
 aho-corasick = "1.1.4"
 arborium-theme = "2.4.5"
 cc = "1.0.87"
-facet-styx = { git = "https://github.com/facet-rs/facet", rev = "dc57e24e381f0c61b4acfa242c368656a84348d4" }
-gingembre-syntax = { git = "https://github.com/facet-rs/facet", rev = "dc57e24e381f0c61b4acfa242c368656a84348d4" }
+facet-styx = { git = "https://github.com/bearcove/styx", rev = "db9c6590c751099399a3debe5d6975898530261a" }
+gingembre-syntax = { git = "https://github.com/bearcove/dodeca", rev = "20131be7d72286b2c45a6e2d652c361892e84d47" }
 rediff = { git = "https://github.com/facet-rs/facet", rev = "dc57e24e381f0c61b4acfa242c368656a84348d4" }
 facet = { git = "https://github.com/facet-rs/facet", rev = "dc57e24e381f0c61b4acfa242c368656a84348d4" }
 facet-json = { git = "https://github.com/facet-rs/facet", rev = "dc57e24e381f0c61b4acfa242c368656a84348d4" }
@@ -38,12 +38,12 @@ regex-automata = { version = "0.4.14", default-features = false, features = ["st
 smallvec = { version = "1.15", default-features = false }
 unicode-width = "0.2.2"
 wasm-bindgen = "0.2"
-weavy = { git = "https://github.com/bearcove/weavy", rev = "5231e74c2532bc0fc6eb807b6b3f504e67ca6ac4" }
+weavy = { git = "https://github.com/bearcove/weavy", rev = "2924b51f69bc496ec156f9a41b5cabb95d1c7b2c" }
 
 [patch.crates-io]
-copypatch = { git = "https://github.com/bearcove/weavy", rev = "5231e74c2532bc0fc6eb807b6b3f504e67ca6ac4" }
-taxon = { git = "https://github.com/bearcove/weavy", rev = "5231e74c2532bc0fc6eb807b6b3f504e67ca6ac4" }
-weavy = { git = "https://github.com/bearcove/weavy", rev = "5231e74c2532bc0fc6eb807b6b3f504e67ca6ac4" }
+copypatch = { git = "https://github.com/bearcove/weavy", rev = "2924b51f69bc496ec156f9a41b5cabb95d1c7b2c" }
+taxon = { git = "https://github.com/bearcove/weavy", rev = "2924b51f69bc496ec156f9a41b5cabb95d1c7b2c" }
+weavy = { git = "https://github.com/bearcove/weavy", rev = "2924b51f69bc496ec156f9a41b5cabb95d1c7b2c" }
 
 
 [workspace.lints.rust]
