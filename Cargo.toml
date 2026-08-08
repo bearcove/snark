@@ -38,12 +38,12 @@ regex-automata = { version = "0.4.14", default-features = false, features = ["st
 smallvec = { version = "1.15", default-features = false }
 unicode-width = "0.2.2"
 wasm-bindgen = "0.2"
-weavy = { git = "https://github.com/bearcove/weavy", rev = "2924b51f69bc496ec156f9a41b5cabb95d1c7b2c" }
+weavy = { git = "https://github.com/bearcove/weavy", rev = "dee996618117ce1c512f3f613003351df679c8bf" }
 
 [patch.crates-io]
-copypatch = { git = "https://github.com/bearcove/weavy", rev = "2924b51f69bc496ec156f9a41b5cabb95d1c7b2c" }
-taxon = { git = "https://github.com/bearcove/weavy", rev = "2924b51f69bc496ec156f9a41b5cabb95d1c7b2c" }
-weavy = { git = "https://github.com/bearcove/weavy", rev = "2924b51f69bc496ec156f9a41b5cabb95d1c7b2c" }
+copypatch = { git = "https://github.com/bearcove/weavy", rev = "dee996618117ce1c512f3f613003351df679c8bf" }
+taxon = { git = "https://github.com/bearcove/weavy", rev = "dee996618117ce1c512f3f613003351df679c8bf" }
+weavy = { git = "https://github.com/bearcove/weavy", rev = "dee996618117ce1c512f3f613003351df679c8bf" }
 
 
 [workspace.lints.rust]
