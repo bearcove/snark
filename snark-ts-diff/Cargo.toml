@@ -15,7 +15,7 @@ publish = false
 rustdoc-args = ["--html-in-header", "arborium-header.html"]
 
 [dependencies]
-snark = { path = "../snark", features = ["json-import"] }
-snark-dsl = { path = "../snark-dsl", features = ["native"] }
-facet = { path = "../facet" }
-facet-json = { path = "../facet-json" }
+snark = { workspace = true, features = ["json-import"] }
+snark-dsl = { workspace = true, features = ["native"] }
+facet.workspace = true
+facet-json.workspace = true

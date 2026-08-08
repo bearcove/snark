@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = [
+  "margin",
+  "margin-term",
+  "snark",
+  "snark-dsl",
+  "snark-playground",
+  "snark-scanner-host",
+  "snark-ts-diff",
+  "snark-wasm",
+]
+
+[workspace.package]
+version = "0.10.0-rc.1"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bearcove/snark"
+homepage = "https://github.com/bearcove/snark"
+
+[workspace.dependencies]
+aho-corasick = "1.1.4"
+arborium-theme = "2.4.5"
+cc = "1.0.87"
+facet-styx = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
+gingembre-syntax = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
+rediff = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
+facet = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
+facet-json = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
+indexmap = { version = "2.12.1", default-features = false }
+snark = { path = "snark", version = "0.0.1" }
+snark-dsl = { path = "snark-dsl" }
+snark-scanner-host = { path = "snark-scanner-host" }
+margin = { path = "margin", version = "0.10.0-rc.1" }
+regex = { version = "1.12.4", default-features = false, features = ["std", "unicode"] }
+regex-automata = { version = "0.4.14", default-features = false, features = ["std", "unicode", "meta", "perf", "hybrid"] }
+smallvec = { version = "1.15", default-features = false }
+unicode-width = "0.2.2"
+wasm-bindgen = "0.2"
+weavy = { git = "https://github.com/bearcove/weavy", rev = "0830c102a078697dc9e5f0d5a5e99c4f6b204871" }
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(facet_no_doc)", "cfg(kani)"] }
+
+[workspace.lints.clippy]
+disallowed_methods = "deny"

@@ -15,7 +15,10 @@ include = [
     "Cargo.toml",
     "README.md",
     "CHANGELOG.md",
+    "arborium-header.html",
+    "build.rs",
     "docs/**",
+    "examples/**",
     "src/**",
     "tests/fixtures/**",
 ]
@@ -38,11 +41,11 @@ smallvec.workspace = true
 weavy.workspace = true
 
 [dev-dependencies]
-facet-styx = { path = "../facet-styx" }
-gingembre-syntax = { path = "../gingembre-syntax" }
-rediff = { path = "../rediff" }
-snark-dsl = { path = "../snark-dsl", features = ["native"] }
-snark-scanner-host = { path = "../snark-scanner-host" }
+facet-styx.workspace = true
+gingembre-syntax.workspace = true
+rediff.workspace = true
+snark-dsl = { workspace = true, features = ["native"] }
+snark-scanner-host.workspace = true
 
 [[example]]
 name = "weavy_bench"
