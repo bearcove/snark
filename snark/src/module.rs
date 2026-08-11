@@ -395,6 +395,13 @@ dense_row!(
     ]
 );
 
+/// Runtime row views use fixed-width copy fields rather than native pointers or `usize`.
+pub const fn runtime_fact_rows_are_portable() -> bool {
+    std::mem::size_of::<ParseStateRow>() == 20
+        && std::mem::size_of::<ProductionRow>() == 16
+        && std::mem::size_of::<ProductionMetadataRow>() == 8
+}
+
 /// A self-contained admitted Snark parser module.
 pub struct SnarkModule {
     grammar_fingerprint: GrammarFingerprint,

@@ -6653,9 +6653,96 @@ pub(crate) fn runtime_fact_read_count() -> usize {
     RUNTIME_FACT_READS.load(Ordering::Relaxed)
 }
 
+#[derive(Clone, Copy)]
+struct RuntimeParseStateFacts {
+    id: parser_ir::ParseStateId,
+    lex_mode: parser_ir::LexModeId,
+}
+
+impl RuntimeParseStateFacts {
+    const fn id(self) -> parser_ir::ParseStateId {
+        self.id
+    }
+
+    const fn lex_mode(self) -> parser_ir::LexModeId {
+        self.lex_mode
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeLexModeFacts {
+    id: parser_ir::LexModeId,
+    terminal_count: usize,
+    external_count: usize,
+    reserved_context: Option<parser_ir::ReservedContextId>,
+    valid_symbols: Option<parser_ir::ValidSymbolSetId>,
+    word: Option<parser_ir::TerminalId>,
+}
+
+impl RuntimeLexModeFacts {
+    const fn id(self) -> parser_ir::LexModeId {
+        self.id
+    }
+
+    const fn reserved_context(self) -> Option<parser_ir::ReservedContextId> {
+        self.reserved_context
+    }
+
+    const fn valid_symbols(self) -> Option<parser_ir::ValidSymbolSetId> {
+        self.valid_symbols
+    }
+
+    const fn word(self) -> Option<parser_ir::TerminalId> {
+        self.word
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeProductionFacts {
+    step_count: usize,
+    dynamic_precedence: i32,
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeProductionStepFacts {
+    field: Option<crate::validated::FieldId>,
+    alias: Option<crate::validated::AliasId>,
+    alias_named: Option<bool>,
+}
+
+impl RuntimeProductionStepFacts {
+    const fn field(self) -> Option<crate::validated::FieldId> {
+        self.field
+    }
+
+    const fn alias(self) -> Option<crate::validated::AliasId> {
+        self.alias
+    }
+
+    const fn alias_named(self) -> Option<bool> {
+        self.alias_named
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeProductionMetadataFacts {
+    public_node: Option<parser_ir::PublicNodeKindId>,
+}
+
+impl RuntimeProductionMetadataFacts {
+    const fn public_node(self) -> Option<parser_ir::PublicNodeKindId> {
+        self.public_node
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeExternalFacts {
+    ordinal: u32,
+}
+
 trait RuntimeParserFacts {
-    fn parse_state(&self, state: parser_ir::ParseStateId) -> Option<&parser_ir::ParseState>;
-    fn lex_mode(&self, mode: parser_ir::LexModeId) -> Option<&parser_ir::LexMode>;
+    fn parse_state(&self, state: parser_ir::ParseStateId) -> Option<RuntimeParseStateFacts>;
+    fn lex_mode(&self, mode: parser_ir::LexModeId) -> Option<RuntimeLexModeFacts>;
     fn action_entry(
         &self,
         state: parser_ir::ParseStateId,
@@ -6670,19 +6757,33 @@ trait RuntimeParserFacts {
         &self,
         context: parser_ir::ReservedContextId,
     ) -> Option<&parser_ir::ReservedContext>;
-    fn external_symbol(
+    fn lex_mode_terminal(
         &self,
-        external: parser_ir::ExternalId,
-    ) -> Option<&parser_ir::ExternalSymbol>;
-    fn valid_symbol_set(
+        mode: parser_ir::LexModeId,
+        index: usize,
+    ) -> Option<parser_ir::TerminalId>;
+    fn lex_mode_external(
+        &self,
+        mode: parser_ir::LexModeId,
+        index: usize,
+    ) -> Option<parser_ir::ExternalId>;
+    fn external_symbol(&self, external: parser_ir::ExternalId) -> Option<RuntimeExternalFacts>;
+    fn valid_symbol_external(
         &self,
         set: parser_ir::ValidSymbolSetId,
-    ) -> Option<&parser_ir::ValidSymbolSet>;
-    fn production(&self, production: parser_ir::ProductionId) -> Option<&parser_ir::Production>;
+        index: usize,
+    ) -> Option<parser_ir::ExternalId>;
+    fn valid_symbol_count(&self, set: parser_ir::ValidSymbolSetId) -> Option<usize>;
+    fn production(&self, production: parser_ir::ProductionId) -> Option<RuntimeProductionFacts>;
+    fn production_step(
+        &self,
+        production: parser_ir::ProductionId,
+        index: usize,
+    ) -> Option<RuntimeProductionStepFacts>;
     fn production_metadata(
         &self,
         metadata: parser_ir::ProductionMetadataId,
-    ) -> Option<&parser_ir::ProductionMetadata>;
+    ) -> Option<RuntimeProductionMetadataFacts>;
 }
 
 #[derive(Clone, Copy)]
@@ -6699,14 +6800,26 @@ impl OwnedRuntimeParserFacts<'_> {
 }
 
 impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
-    fn parse_state(&self, state: parser_ir::ParseStateId) -> Option<&parser_ir::ParseState> {
+    fn parse_state(&self, state: parser_ir::ParseStateId) -> Option<RuntimeParseStateFacts> {
         Self::record_read();
-        self.table.states().get(state.get() as usize)
+        let state = self.table.states().get(state.get() as usize)?;
+        Some(RuntimeParseStateFacts {
+            id: state.id(),
+            lex_mode: state.lex_mode(),
+        })
     }
 
-    fn lex_mode(&self, mode: parser_ir::LexModeId) -> Option<&parser_ir::LexMode> {
+    fn lex_mode(&self, mode: parser_ir::LexModeId) -> Option<RuntimeLexModeFacts> {
         Self::record_read();
-        self.table.lexical_modes().get(mode.get() as usize)
+        let mode = self.table.lexical_modes().get(mode.get() as usize)?;
+        Some(RuntimeLexModeFacts {
+            id: mode.id(),
+            terminal_count: mode.terminals().len(),
+            external_count: mode.externals().len(),
+            reserved_context: mode.reserved_context(),
+            valid_symbols: mode.valid_symbols(),
+            word: mode.word(),
+        })
     }
 
     fn action_entry(
@@ -6735,38 +6848,111 @@ impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
         self.parser.reserved_contexts().get(context.get() as usize)
     }
 
-    fn external_symbol(
+    fn lex_mode_terminal(
         &self,
-        external: parser_ir::ExternalId,
-    ) -> Option<&parser_ir::ExternalSymbol> {
+        mode: parser_ir::LexModeId,
+        index: usize,
+    ) -> Option<parser_ir::TerminalId> {
         Self::record_read();
-        self.parser
+        self.table
+            .lexical_modes()
+            .get(mode.get() as usize)?
+            .terminals()
+            .get(index)
+            .copied()
+    }
+
+    fn lex_mode_external(
+        &self,
+        mode: parser_ir::LexModeId,
+        index: usize,
+    ) -> Option<parser_ir::ExternalId> {
+        Self::record_read();
+        self.table
+            .lexical_modes()
+            .get(mode.get() as usize)?
+            .externals()
+            .get(index)
+            .copied()
+    }
+
+    fn external_symbol(&self, external: parser_ir::ExternalId) -> Option<RuntimeExternalFacts> {
+        Self::record_read();
+        let external = self
+            .parser
             .symbols()
             .externals()
-            .get(external.get() as usize)
+            .get(external.get() as usize)?;
+        Some(RuntimeExternalFacts {
+            ordinal: external.ordinal(),
+        })
     }
 
-    fn valid_symbol_set(
+    fn valid_symbol_external(
         &self,
         set: parser_ir::ValidSymbolSetId,
-    ) -> Option<&parser_ir::ValidSymbolSet> {
+        index: usize,
+    ) -> Option<parser_ir::ExternalId> {
         Self::record_read();
-        self.table.valid_symbol_sets().get(set.get() as usize)
+        self.table
+            .valid_symbol_sets()
+            .get(set.get() as usize)?
+            .externals()
+            .get(index)
+            .copied()
     }
 
-    fn production(&self, production: parser_ir::ProductionId) -> Option<&parser_ir::Production> {
+    fn valid_symbol_count(&self, set: parser_ir::ValidSymbolSetId) -> Option<usize> {
         Self::record_read();
-        self.parser.productions().get(production.get() as usize)
+        Some(
+            self.table
+                .valid_symbol_sets()
+                .get(set.get() as usize)?
+                .externals()
+                .len(),
+        )
+    }
+
+    fn production(&self, production: parser_ir::ProductionId) -> Option<RuntimeProductionFacts> {
+        Self::record_read();
+        let production = self.parser.productions().get(production.get() as usize)?;
+        Some(RuntimeProductionFacts {
+            step_count: production.steps().len(),
+            dynamic_precedence: production.dynamic_precedence(),
+        })
+    }
+
+    fn production_step(
+        &self,
+        production: parser_ir::ProductionId,
+        index: usize,
+    ) -> Option<RuntimeProductionStepFacts> {
+        Self::record_read();
+        let step = self
+            .parser
+            .productions()
+            .get(production.get() as usize)?
+            .steps()
+            .get(index)?;
+        Some(RuntimeProductionStepFacts {
+            field: step.field(),
+            alias: step.alias(),
+            alias_named: step.alias_named(),
+        })
     }
 
     fn production_metadata(
         &self,
         metadata: parser_ir::ProductionMetadataId,
-    ) -> Option<&parser_ir::ProductionMetadata> {
+    ) -> Option<RuntimeProductionMetadataFacts> {
         Self::record_read();
-        self.parser
+        let metadata = self
+            .parser
             .production_metadata()
-            .get(metadata.get() as usize)
+            .get(metadata.get() as usize)?;
+        Some(RuntimeProductionMetadataFacts {
+            public_node: metadata.public_node(),
+        })
     }
 }
 
@@ -11427,7 +11613,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
         let valid_symbols = if let parser_ir::LookaheadSymbol::External(_) = token.lookahead {
             self.facts
                 .lex_mode(mode_id)
-                .and_then(parser_ir::LexMode::valid_symbols)
+                .and_then(RuntimeLexModeFacts::valid_symbols)
         } else {
             None
         };
@@ -11763,7 +11949,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
                 {
                     self.facts
                         .lex_mode(mode_id)
-                        .and_then(parser_ir::LexMode::valid_symbols)
+                        .and_then(RuntimeLexModeFacts::valid_symbols)
                 } else {
                     None
                 };
@@ -11902,7 +12088,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
     fn parse_state(
         &self,
         state: parser_ir::ParseStateId,
-    ) -> Result<&parser_ir::ParseState, RuntimeWeavyStepError> {
+    ) -> Result<RuntimeParseStateFacts, RuntimeWeavyStepError> {
         self.facts
             .parse_state(state)
             .ok_or(RuntimeWeavyStepError::MissingState { state })
@@ -11910,7 +12096,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
 
     fn lex(
         &self,
-        state: &parser_ir::ParseState,
+        state: RuntimeParseStateFacts,
         byte_position: usize,
     ) -> Result<RuntimeWeavyToken, RuntimeWeavyStepError> {
         self.lexer_scratch.record_lex_call();
@@ -12156,7 +12342,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
 
     fn runtime_auto_close_token(
         &self,
-        state: &parser_ir::ParseState,
+        state: RuntimeParseStateFacts,
         byte_position: usize,
     ) -> Result<Option<RuntimeWeavyToken>, RuntimeWeavyStepError> {
         let Some(open_tag) = self.auto_close_stack.last() else {
@@ -12323,24 +12509,26 @@ impl<'a> RuntimeWeavyStepper<'a> {
 
     fn match_external(
         &self,
-        state: &parser_ir::ParseState,
-        mode: &parser_ir::LexMode,
+        state: RuntimeParseStateFacts,
+        mode: RuntimeLexModeFacts,
         external: parser_ir::ExternalId,
         byte_position: usize,
     ) -> Result<Option<ExternalScanResult>, RuntimeWeavyStepError> {
         let Some(scanner) = self.external_scanner else {
             return Err(RuntimeWeavyStepError::MissingExternalScannerHost {
                 state: state.id(),
-                external_count: mode.externals().len(),
+                external_count: mode.external_count,
             });
         };
         let external_row = self
-            .facts
-            .external_symbol(external)
+            .parser
+            .symbols()
+            .externals()
+            .get(external.get() as usize)
             .ok_or(RuntimeWeavyStepError::UnsupportedCanonicalOp)?;
         let valid_symbols = mode
             .valid_symbols()
-            .and_then(|valid_symbols| self.facts.valid_symbol_set(valid_symbols));
+            .map(|set| &self.table.valid_symbol_sets()[set.get() as usize]);
         scanner
             .scan(ExternalScanRequest::new(
                 state.id(),
@@ -12421,7 +12609,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
             }
             if !entry.extra {
                 remaining_children -= 1;
-                let Some(step) = production_row.steps().get(remaining_children) else {
+                let Some(step) = self.facts.production_step(production, remaining_children) else {
                     return Err(RuntimeWeavyStepError::EmptyStack);
                 };
                 let alias_range = fragment.byte_range();

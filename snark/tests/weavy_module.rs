@@ -46,6 +46,11 @@ fn live_parser_executes_through_runtime_facts_interface() {
 }
 
 #[test]
+fn runtime_fact_rows_are_portable_copy_views() {
+    assert!(snark::module::runtime_fact_rows_are_portable());
+}
+
+#[test]
 fn module_inspection_reports_snark_constants_and_sections() {
     let built = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
     let bytes = built.save().expect("save");
