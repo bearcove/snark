@@ -178,6 +178,7 @@ pub struct ReportSection {
 /// d[impl model.report]
 #[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct Report {
+    pub code: Option<String>,
     pub severity: Severity,
     pub title: String,
     pub annotations: Vec<Annotation>,
@@ -243,6 +244,7 @@ pub struct LayoutPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct PlannedReport {
+    pub code: Option<String>,
     pub severity: Severity,
     pub title: String,
     pub windows: Vec<SourceWindow>,
@@ -384,6 +386,7 @@ fn plan_report(
         .collect();
 
     Ok(PlannedReport {
+        code: report.code.clone(),
         severity: report.severity,
         title: report.title.clone(),
         windows,

@@ -21,6 +21,7 @@ fn sample_diagnostics() -> Diagnostics {
         ],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "unknown name `missing`".to_string(),
             annotations: vec![
                 Annotation {
@@ -106,6 +107,19 @@ fn plan_preserves_structured_reports_and_explicit_windows() {
     assert_eq!(plan.reports[0].sections[0].title, "while checking `main`");
 }
 
+#[test]
+fn plan_preserves_optional_report_code() {
+    let mut diagnostics = sample_diagnostics();
+    diagnostics.reports[0].code = Some("DIBS-SYNTAX-UNEXPECTED".to_string());
+
+    let plan = plan(&diagnostics, &LayoutOptions::with_width(72)).unwrap();
+
+    assert_eq!(
+        plan.reports[0].code.as_deref(),
+        Some("DIBS-SYNTAX-UNEXPECTED")
+    );
+}
+
 // d[verify input.span-bounds]
 // d[verify span.zero-width]
 // d[verify span.line-breaks]
@@ -121,6 +135,7 @@ fn plan_keeps_zero_width_and_multiline_segments_intact() {
         }],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "bad insertion".to_string(),
             annotations: vec![
                 Annotation {
@@ -181,6 +196,7 @@ fn plan_merges_nearby_windows_and_assigns_explicit_geometry_and_placement() {
         reports: vec![Report {
             severity: Severity::Error,
             title: "crowded".to_string(),
+            code: None,
             annotations: vec![
                 Annotation {
                     spans: vec![Span::new("main", 0, 5)],
@@ -260,6 +276,7 @@ fn plan_uses_display_width_for_side_placement_budget() {
         reports: vec![Report {
             severity: Severity::Error,
             title: "wide".to_string(),
+            code: None,
             annotations: vec![Annotation {
                 spans: vec![Span::new("main", 2, 4)],
                 role: AnnotationRole::PrimaryLabel,
@@ -326,6 +343,7 @@ fn plan_coalesces_annotations_and_respects_priority_lattice() {
         }],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "overlap".to_string(),
             annotations: vec![
                 Annotation {
@@ -397,6 +415,7 @@ fn plan_uses_display_width_for_message_placement() {
         }],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "wide".to_string(),
             annotations: vec![Annotation {
                 spans: vec![Span::new("main", 0, 5)],

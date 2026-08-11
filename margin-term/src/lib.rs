@@ -236,16 +236,19 @@ pub fn render_plan_with_theme(
             output.push('\n');
         }
 
-        let _ = writeln!(
-            output,
-            "{}: {}",
-            colorize(
-                severity_label(report.severity),
-                theme.style_for_severity(report.severity),
-                capabilities.color_level
-            ),
-            report.title
+        let severity = colorize(
+            severity_label(report.severity),
+            theme.style_for_severity(report.severity),
+            capabilities.color_level,
         );
+        match &report.code {
+            Some(code) => {
+                let _ = writeln!(output, "{severity}[{code}]: {}", report.title);
+            }
+            None => {
+                let _ = writeln!(output, "{severity}: {}", report.title);
+            }
+        }
 
         for window in &report.windows {
             render_window(&mut output, window, capabilities, theme);

@@ -19,6 +19,7 @@ fn sample_diagnostics() -> Diagnostics {
         }],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "unknown name `missing`".to_string(),
             annotations: vec![
                 Annotation {
@@ -81,6 +82,29 @@ fn render_supports_plaintext_ascii_output() {
         "{rendered}"
     );
     assert!(!rendered.contains("\u{1b}["));
+}
+
+#[test]
+fn render_plaintext_heading_includes_optional_report_code() {
+    let mut diagnostics = sample_diagnostics();
+    diagnostics.reports[0].code = Some("DIBS-SYNTAX-UNEXPECTED".to_string());
+
+    let rendered = render(
+        &diagnostics,
+        TerminalCapabilities {
+            width: 48,
+            glyph_mode: GlyphMode::Ascii,
+            color_level: ColorLevel::None,
+            hyperlink_mode: HyperlinkMode::None,
+            tab_width: 4,
+        },
+    )
+    .unwrap();
+
+    assert!(
+        rendered.contains("error[DIBS-SYNTAX-UNEXPECTED]: unknown name `missing`"),
+        "{rendered}"
+    );
 }
 
 /// d[verify term.explicit-capabilities]
@@ -162,6 +186,7 @@ fn render_multiline_annotations_only_emit_the_message_once() {
         }],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "spans lines".to_string(),
             annotations: vec![Annotation {
                 spans: vec![Span::new("main", 2, 8)],
@@ -276,6 +301,7 @@ fn render_clips_long_lines_with_explicit_ellipsis() {
         }],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "too long".to_string(),
             annotations: vec![Annotation {
                 spans: vec![Span::new("main", 20, 24)],
@@ -316,6 +342,7 @@ fn render_wraps_long_path_like_tokens() {
         }],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "missing".to_string(),
             annotations: vec![Annotation {
                 spans: vec![Span::new("main", 0, 7)],
@@ -402,6 +429,7 @@ fn render_expands_tabs_and_keeps_unicode_text_stable() {
         }],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "unicode".to_string(),
             annotations: vec![Annotation {
                 spans: vec![Span::new("main", 2, "a\tCafe\u{301}".len())],
@@ -447,6 +475,7 @@ fn render_multiline_annotations_emit_the_message_once() {
         }],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "grouped".to_string(),
             annotations: vec![Annotation {
                 spans: vec![Span::new("main", 0, 43)],
@@ -492,6 +521,7 @@ fn render_wraps_long_unbroken_tokens() {
         }],
         reports: vec![Report {
             severity: Severity::Error,
+            code: None,
             title: "path".to_string(),
             annotations: vec![Annotation {
                 spans: vec![Span::new("main", 0, 5)],
