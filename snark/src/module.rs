@@ -25,6 +25,31 @@ const PARSER_GRAMMAR_SCHEMA: u64 = 0x38fe_226c_5a19_8d0e;
 const PARSE_TABLE_SCHEMA: u64 = 0x2746_d4b8_93d0_e2ac;
 const PARSE_PLAN_SCHEMA: u64 = 0x9fa7_5d2c_1b40_a866;
 
+// Durable runtime range contract. Range IDs are module-local and carried by
+// executable Snark intrinsics. The admitted runtime exposes typed accessors
+// over these immutable rows for state/mode lookup, dispatch, goto, reduction,
+// scanner metadata, tree names, and plan blocks. Regex engines and lookup
+// indexes are process-local derivatives built once from the matcher/name
+// ranges; they are never a second semantic parser source. A loaded module is
+// lifetime-bound to the `.weavy` bytes through `weavy_phon::BorrowedModule`.
+const RANGE_RUNTIME_HEADER: u32 = 0;
+const RANGE_PARSE_STATES: u32 = 1;
+const RANGE_ACTION_ENTRIES: u32 = 2;
+const RANGE_ACTIONS: u32 = 3;
+const RANGE_GOTOS: u32 = 4;
+const RANGE_PRODUCTIONS: u32 = 5;
+const RANGE_PRODUCTION_STEPS: u32 = 6;
+const RANGE_PRODUCTION_METADATA: u32 = 7;
+const RANGE_LEX_MODES: u32 = 8;
+const RANGE_LEX_TERMINALS: u32 = 9;
+const RANGE_MATCHER_SPECS: u32 = 10;
+const RANGE_SYMBOLS: u32 = 11;
+const RANGE_NAMES: u32 = 12;
+const RANGE_RESERVED_CONTEXTS: u32 = 13;
+const RANGE_VALID_SYMBOL_SETS: u32 = 14;
+const RANGE_PLAN_OPS: u32 = 15;
+const RANGE_PLAN_BLOCKS: u32 = 16;
+
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
 struct SnarkModuleData {
     grammar_fingerprint: GrammarFingerprint,
