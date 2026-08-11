@@ -56,7 +56,7 @@ fn module_inspection_reports_snark_constants_and_sections() {
     let bytes = built.save().expect("save");
     let report: SnarkModuleInspection = SnarkModule::inspect(&bytes).expect("inspect");
     assert_eq!(report.constant_count, 4);
-    assert_eq!(report.constant_ranges.len(), 5);
+    assert_eq!(report.constant_ranges.len(), 13);
     assert!(
         report
             .constant_ranges

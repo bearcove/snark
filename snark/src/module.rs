@@ -43,20 +43,16 @@ const PARSE_PLAN_SCHEMA: u64 = 0x9fa7_5d2c_1b40_a866;
 const RANGE_RUNTIME_HEADER: u32 = 0;
 const RANGE_PARSE_STATES: u32 = 1;
 const RANGE_ACTION_ENTRIES: u32 = 2;
-const RANGE_ACTIONS: u32 = 3;
-const RANGE_GOTOS: u32 = 4;
-const RANGE_PRODUCTIONS: u32 = 5;
-const RANGE_PRODUCTION_STEPS: u32 = 6;
-const RANGE_PRODUCTION_METADATA: u32 = 7;
-const RANGE_LEX_MODES: u32 = 8;
-const RANGE_LEX_TERMINALS: u32 = 9;
-const RANGE_MATCHER_SPECS: u32 = 10;
-const RANGE_SYMBOLS: u32 = 11;
-const RANGE_NAMES: u32 = 12;
-const RANGE_RESERVED_CONTEXTS: u32 = 13;
-const RANGE_VALID_SYMBOL_SETS: u32 = 14;
-const RANGE_PLAN_OPS: u32 = 15;
-const RANGE_PLAN_BLOCKS: u32 = 16;
+const RANGE_GOTOS: u32 = 3;
+const RANGE_LEX_MODES: u32 = 4;
+const RANGE_LEX_TERMINALS: u32 = 5;
+const RANGE_LEX_EXTERNALS: u32 = 6;
+const RANGE_PRODUCTIONS: u32 = 7;
+const RANGE_PRODUCTION_STEPS: u32 = 8;
+const RANGE_PRODUCTION_METADATA: u32 = 9;
+const RANGE_EXTERNALS: u32 = 10;
+const RANGE_RESERVED_TERMINALS: u32 = 11;
+const RANGE_VALID_SYMBOL_EXTERNALS: u32 = 12;
 
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
 struct SnarkModuleData {
@@ -88,6 +84,50 @@ struct ParseStateRow {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ActionEntryRow {
+    state: u32,
+    lookahead_kind: u8,
+    lookahead_a: u32,
+    lookahead_b: u32,
+    entry_index: u32,
+    action_count: u32,
+    first_action_kind: u8,
+    first_action_a: u32,
+    first_action_b: u32,
+    first_action_c: u32,
+    first_action_d: u32,
+    first_action_e: i32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GotoRow {
+    state: u32,
+    nonterminal: u32,
+    target: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LexModeRow {
+    first_terminal: u32,
+    terminal_count: u32,
+    first_external: u32,
+    external_count: u32,
+    reserved_context: u32,
+    valid_symbols: u32,
+    word: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IndexedIdRow {
+    owner: u32,
+    value: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExternalRow {
+    ordinal: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ProductionRow {
     first_step: u32,
     step_count: u32,
@@ -111,12 +151,68 @@ struct ProductionMetadataRow {
 }
 
 struct RuntimeRanges {
-    schemas: Vec<Schema>,
     header: ConstantRange,
     states: ConstantRange,
+    action_entries: ConstantRange,
+    gotos: ConstantRange,
+    lex_modes: ConstantRange,
+    lex_terminals: ConstantRange,
+    lex_externals: ConstantRange,
     productions: ConstantRange,
     production_steps: ConstantRange,
     production_metadata: ConstantRange,
+    externals: ConstantRange,
+    reserved_terminals: ConstantRange,
+    valid_symbol_externals: ConstantRange,
+}
+
+fn encode_lookahead(lookahead: crate::parser::LookaheadSymbol) -> (u8, u32, u32) {
+    match lookahead {
+        crate::parser::LookaheadSymbol::Terminal(id) => (0, id.get(), 0),
+        crate::parser::LookaheadSymbol::External(id) => (1, id.get(), 0),
+        crate::parser::LookaheadSymbol::Eof => (2, 0, 0),
+        crate::parser::LookaheadSymbol::ReservedWord { terminal, context } => {
+            (3, terminal.get(), context.get())
+        }
+        crate::parser::LookaheadSymbol::ErrorRecovery(id) => (4, id.get(), 0),
+    }
+}
+
+fn encode_action(action: crate::parser::ParseAction) -> (u8, u32, u32, u32, u32, i32) {
+    match action {
+        crate::parser::ParseAction::Accept {
+            production,
+            metadata,
+            symbol,
+            child_count,
+            dynamic_precedence,
+        } => (
+            0,
+            production.get(),
+            metadata.get(),
+            symbol.get(),
+            u32::try_from(child_count).expect("child count overflow"),
+            dynamic_precedence,
+        ),
+        crate::parser::ParseAction::Shift { state, repetition } => {
+            (1, state.get(), u32::from(repetition), 0, 0, 0)
+        }
+        crate::parser::ParseAction::ShiftExtra => (2, 0, 0, 0, 0, 0),
+        crate::parser::ParseAction::Reduce {
+            production,
+            metadata,
+            symbol,
+            child_count,
+            dynamic_precedence,
+        } => (
+            3,
+            production.get(),
+            metadata.get(),
+            symbol.get(),
+            u32::try_from(child_count).expect("child count overflow"),
+            dynamic_precedence,
+        ),
+    }
 }
 
 impl RuntimeRanges {
@@ -156,6 +252,141 @@ impl RuntimeRanges {
                 first_entry += row.entry_count;
                 first_goto += row.goto_count;
                 row
+            })
+            .collect::<Vec<_>>();
+        let action_entries = table
+            .states()
+            .iter()
+            .flat_map(|state| {
+                state
+                    .entries()
+                    .iter()
+                    .enumerate()
+                    .map(move |(entry_index, entry)| {
+                        let (lookahead_kind, lookahead_a, lookahead_b) =
+                            encode_lookahead(entry.lookahead());
+                        let (
+                            first_action_kind,
+                            first_action_a,
+                            first_action_b,
+                            first_action_c,
+                            first_action_d,
+                            first_action_e,
+                        ) = entry
+                            .actions()
+                            .first()
+                            .copied()
+                            .map_or((u8::MAX, 0, 0, 0, 0, 0), encode_action);
+                        ActionEntryRow {
+                            state: state.id().get(),
+                            lookahead_kind,
+                            lookahead_a,
+                            lookahead_b,
+                            entry_index: u32::try_from(entry_index).expect("action entry overflow"),
+                            action_count: u32::try_from(entry.actions().len())
+                                .expect("action count overflow"),
+                            first_action_kind,
+                            first_action_a,
+                            first_action_b,
+                            first_action_c,
+                            first_action_d,
+                            first_action_e,
+                        }
+                    })
+            })
+            .collect::<Vec<_>>();
+        let gotos = table
+            .states()
+            .iter()
+            .flat_map(|state| {
+                state.gotos().iter().map(move |goto| GotoRow {
+                    state: state.id().get(),
+                    nonterminal: goto.nonterminal().get(),
+                    target: goto.state().get(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut first_terminal = 0u32;
+        let mut first_external = 0u32;
+        let lex_modes = table
+            .lexical_modes()
+            .iter()
+            .map(|mode| {
+                let row = LexModeRow {
+                    first_terminal,
+                    terminal_count: u32::try_from(mode.terminals().len())
+                        .expect("terminal count overflow"),
+                    first_external,
+                    external_count: u32::try_from(mode.externals().len())
+                        .expect("external count overflow"),
+                    reserved_context: mode.reserved_context().map_or(u32::MAX, |id| id.get()),
+                    valid_symbols: mode.valid_symbols().map_or(u32::MAX, |id| id.get()),
+                    word: mode.word().map_or(u32::MAX, |id| id.get()),
+                };
+                first_terminal += row.terminal_count;
+                first_external += row.external_count;
+                row
+            })
+            .collect::<Vec<_>>();
+        let lex_terminals = table
+            .lexical_modes()
+            .iter()
+            .flat_map(|mode| {
+                mode.terminals()
+                    .iter()
+                    .copied()
+                    .map(move |terminal| IndexedIdRow {
+                        owner: mode.id().get(),
+                        value: terminal.get(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        let lex_externals = table
+            .lexical_modes()
+            .iter()
+            .flat_map(|mode| {
+                mode.externals()
+                    .iter()
+                    .copied()
+                    .map(move |external| IndexedIdRow {
+                        owner: mode.id().get(),
+                        value: external.get(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        let externals = parser
+            .symbols()
+            .externals()
+            .iter()
+            .map(|external| ExternalRow {
+                ordinal: external.ordinal(),
+            })
+            .collect::<Vec<_>>();
+        let reserved_terminals = parser
+            .reserved_contexts()
+            .iter()
+            .flat_map(|context| {
+                context
+                    .entries()
+                    .iter()
+                    .copied()
+                    .map(move |terminal| IndexedIdRow {
+                        owner: context.id().get(),
+                        value: terminal.get(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        let valid_symbol_externals = table
+            .valid_symbol_sets()
+            .iter()
+            .flat_map(|set| {
+                set.externals()
+                    .iter()
+                    .copied()
+                    .map(move |external| IndexedIdRow {
+                        owner: set.id().get(),
+                        value: external.get(),
+                    })
             })
             .collect::<Vec<_>>();
         let mut first_step = 0u32;
@@ -206,6 +437,11 @@ impl RuntimeRanges {
         let mut schemas = Vec::new();
         let header = dense_range("SnarkRuntimeHeader", &header_rows, &mut schemas)?;
         let states = dense_range("SnarkParseState", &states, &mut schemas)?;
+        let action_entries = dense_range("SnarkActionEntry", &action_entries, &mut schemas)?;
+        let gotos = dense_range("SnarkGoto", &gotos, &mut schemas)?;
+        let lex_modes = dense_range("SnarkLexMode", &lex_modes, &mut schemas)?;
+        let lex_terminals = dense_range("SnarkLexTerminal", &lex_terminals, &mut schemas)?;
+        let lex_externals = dense_range("SnarkLexExternal", &lex_externals, &mut schemas)?;
         let productions = dense_range("SnarkProduction", &productions, &mut schemas)?;
         let production_steps = dense_range("SnarkProductionStep", &production_steps, &mut schemas)?;
         let production_metadata = dense_range(
@@ -213,13 +449,28 @@ impl RuntimeRanges {
             &production_metadata,
             &mut schemas,
         )?;
+        let externals = dense_range("SnarkExternal", &externals, &mut schemas)?;
+        let reserved_terminals =
+            dense_range("SnarkReservedTerminal", &reserved_terminals, &mut schemas)?;
+        let valid_symbol_externals = dense_range(
+            "SnarkValidSymbolExternal",
+            &valid_symbol_externals,
+            &mut schemas,
+        )?;
         Ok(Self {
-            schemas,
             header,
             states,
+            action_entries,
+            gotos,
+            lex_modes,
+            lex_terminals,
+            lex_externals,
             productions,
             production_steps,
             production_metadata,
+            externals,
+            reserved_terminals,
+            valid_symbol_externals,
         })
     }
 
@@ -237,13 +488,21 @@ impl RuntimeRanges {
             .collect()
     }
 
-    fn into_ranges_ref(&self) -> [&ConstantRange; 5] {
+    fn into_ranges_ref(&self) -> [&ConstantRange; 13] {
         [
             &self.header,
             &self.states,
+            &self.action_entries,
+            &self.gotos,
+            &self.lex_modes,
+            &self.lex_terminals,
+            &self.lex_externals,
             &self.productions,
             &self.production_steps,
             &self.production_metadata,
+            &self.externals,
+            &self.reserved_terminals,
+            &self.valid_symbol_externals,
         ]
     }
 
@@ -251,9 +510,17 @@ impl RuntimeRanges {
         vec![
             self.header,
             self.states,
+            self.action_entries,
+            self.gotos,
+            self.lex_modes,
+            self.lex_terminals,
+            self.lex_externals,
             self.productions,
             self.production_steps,
             self.production_metadata,
+            self.externals,
+            self.reserved_terminals,
+            self.valid_symbol_externals,
         ]
     }
 }
@@ -368,6 +635,48 @@ dense_row!(
         (goto_count, Primitive::U32),
     ]
 );
+dense_row!(
+    ActionEntryRow,
+    [
+        (state, Primitive::U32),
+        (lookahead_kind, Primitive::U8),
+        (lookahead_a, Primitive::U32),
+        (lookahead_b, Primitive::U32),
+        (entry_index, Primitive::U32),
+        (action_count, Primitive::U32),
+        (first_action_kind, Primitive::U8),
+        (first_action_a, Primitive::U32),
+        (first_action_b, Primitive::U32),
+        (first_action_c, Primitive::U32),
+        (first_action_d, Primitive::U32),
+        (first_action_e, Primitive::I32),
+    ]
+);
+dense_row!(
+    GotoRow,
+    [
+        (state, Primitive::U32),
+        (nonterminal, Primitive::U32),
+        (target, Primitive::U32),
+    ]
+);
+dense_row!(
+    LexModeRow,
+    [
+        (first_terminal, Primitive::U32),
+        (terminal_count, Primitive::U32),
+        (first_external, Primitive::U32),
+        (external_count, Primitive::U32),
+        (reserved_context, Primitive::U32),
+        (valid_symbols, Primitive::U32),
+        (word, Primitive::U32),
+    ]
+);
+dense_row!(
+    IndexedIdRow,
+    [(owner, Primitive::U32), (value, Primitive::U32)]
+);
+dense_row!(ExternalRow, [(ordinal, Primitive::U32)]);
 dense_row!(
     ProductionRow,
     [
