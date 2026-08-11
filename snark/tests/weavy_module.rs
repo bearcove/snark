@@ -38,6 +38,14 @@ fn module_round_trip_matches_live_parser_without_construction_workspace() {
 }
 
 #[test]
+fn live_parser_executes_through_runtime_facts_interface() {
+    let module = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
+    let before = module.runtime_facts_read_count();
+    module.parse("letName", None).expect("parse");
+    assert!(module.runtime_facts_read_count() > before);
+}
+
+#[test]
 fn module_inspection_reports_snark_constants_and_sections() {
     let built = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
     let bytes = built.save().expect("save");

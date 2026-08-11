@@ -11,7 +11,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet},
     error::Error,
     fmt,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 #[cfg(all(
@@ -6641,6 +6644,130 @@ fn action_program_for(
             child_count,
             dynamic_precedence,
         })],
+    }
+}
+
+static RUNTIME_FACT_READS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn runtime_fact_read_count() -> usize {
+    RUNTIME_FACT_READS.load(Ordering::Relaxed)
+}
+
+trait RuntimeParserFacts {
+    fn parse_state(&self, state: parser_ir::ParseStateId) -> Option<&parser_ir::ParseState>;
+    fn lex_mode(&self, mode: parser_ir::LexModeId) -> Option<&parser_ir::LexMode>;
+    fn action_entry(
+        &self,
+        state: parser_ir::ParseStateId,
+        lookahead: parser_ir::LookaheadSymbol,
+    ) -> Option<RuntimeWeavyActionEntry>;
+    fn goto_state(
+        &self,
+        state: parser_ir::ParseStateId,
+        nonterminal: parser_ir::NonterminalId,
+    ) -> Option<parser_ir::ParseStateId>;
+    fn reserved_context(
+        &self,
+        context: parser_ir::ReservedContextId,
+    ) -> Option<&parser_ir::ReservedContext>;
+    fn external_symbol(
+        &self,
+        external: parser_ir::ExternalId,
+    ) -> Option<&parser_ir::ExternalSymbol>;
+    fn valid_symbol_set(
+        &self,
+        set: parser_ir::ValidSymbolSetId,
+    ) -> Option<&parser_ir::ValidSymbolSet>;
+    fn production(
+        &self,
+        production: parser_ir::ProductionId,
+    ) -> Option<&parser_ir::Production>;
+    fn production_metadata(
+        &self,
+        metadata: parser_ir::ProductionMetadataId,
+    ) -> Option<&parser_ir::ProductionMetadata>;
+}
+
+#[derive(Clone, Copy)]
+struct OwnedRuntimeParserFacts<'a> {
+    parser: &'a parser_ir::ParserGrammar,
+    table: &'a parser_ir::ParseTable,
+    program: &'a WeavyParserProgram,
+}
+
+impl OwnedRuntimeParserFacts<'_> {
+    fn record_read() {
+        RUNTIME_FACT_READS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
+    fn parse_state(&self, state: parser_ir::ParseStateId) -> Option<&parser_ir::ParseState> {
+        Self::record_read();
+        self.table.states().get(state.get() as usize)
+    }
+
+    fn lex_mode(&self, mode: parser_ir::LexModeId) -> Option<&parser_ir::LexMode> {
+        Self::record_read();
+        self.table.lexical_modes().get(mode.get() as usize)
+    }
+
+    fn action_entry(
+        &self,
+        state: parser_ir::ParseStateId,
+        lookahead: parser_ir::LookaheadSymbol,
+    ) -> Option<RuntimeWeavyActionEntry> {
+        Self::record_read();
+        self.program.action_entry(state, lookahead)
+    }
+
+    fn goto_state(
+        &self,
+        state: parser_ir::ParseStateId,
+        nonterminal: parser_ir::NonterminalId,
+    ) -> Option<parser_ir::ParseStateId> {
+        Self::record_read();
+        self.program.goto_state(state, nonterminal)
+    }
+
+    fn reserved_context(
+        &self,
+        context: parser_ir::ReservedContextId,
+    ) -> Option<&parser_ir::ReservedContext> {
+        Self::record_read();
+        self.parser.reserved_contexts().get(context.get() as usize)
+    }
+
+    fn external_symbol(
+        &self,
+        external: parser_ir::ExternalId,
+    ) -> Option<&parser_ir::ExternalSymbol> {
+        Self::record_read();
+        self.parser.symbols().externals().get(external.get() as usize)
+    }
+
+    fn valid_symbol_set(
+        &self,
+        set: parser_ir::ValidSymbolSetId,
+    ) -> Option<&parser_ir::ValidSymbolSet> {
+        Self::record_read();
+        self.table.valid_symbol_sets().get(set.get() as usize)
+    }
+
+    fn production(
+        &self,
+        production: parser_ir::ProductionId,
+    ) -> Option<&parser_ir::Production> {
+        Self::record_read();
+        self.parser.productions().get(production.get() as usize)
+    }
+
+    fn production_metadata(
+        &self,
+        metadata: parser_ir::ProductionMetadataId,
+    ) -> Option<&parser_ir::ProductionMetadata> {
+        Self::record_read();
+        self.parser.production_metadata().get(metadata.get() as usize)
     }
 }
 
