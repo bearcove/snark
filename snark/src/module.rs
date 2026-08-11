@@ -12,7 +12,7 @@ use phon_storage::{AlignedRegistry, DenseRangeWriter};
 use weavy::DenseLowered;
 use weavy::ir::WeavyOp;
 use weavy::module::{
-    Constant, ConstantId, ConstantPool, ConstantRange, ConstantRangeId, ConstantRangeReference,
+    Constant, ConstantPool, ConstantRange, ConstantRangeId, ConstantRangeReference,
     ConstantReference, DialectRequirement, IntrinsicContract, ModuleManifest, ModuleVerifier,
     StorageProfile, WeavyModule,
 };
@@ -22,7 +22,8 @@ use weavy_phon::{
 
 use crate::artifact::{ArtifactBuildError, GrammarFingerprint, ParserArtifactBuilder};
 use crate::lower::weavy::{
-    WeavyParseError, WeavyParsePlan, WeavyParsePlanData, WeavyParseReport,
+    BorrowedRuntimeParserFacts, WeavyParseError, WeavyParsePlan, WeavyParsePlanData,
+    WeavyParseReport, parse_borrowed_weavy_with_report_and_scanner,
     parse_prepared_weavy_recovering_with_report_and_scanner,
     parse_prepared_weavy_with_report_and_scanner,
 };
@@ -718,6 +719,38 @@ pub struct SnarkModule {
     parse_table: ParseTable,
     plan: WeavyParsePlan,
 }
+/// A loaded Snark module whose runtime fact rows borrow the `.weavy` image.
+
+pub struct BorrowedSnarkModule<'a> {
+    bytes: &'a [u8],
+    parser_grammar: ParserGrammar,
+    parse_table: ParseTable,
+    plan: WeavyParsePlan,
+    facts: BorrowedRuntimeParserFacts<'a>,
+}
+
+impl BorrowedSnarkModule<'_> {
+    /// Parse input through the borrowed dense runtime fact ranges.
+    pub fn parse(
+        &self,
+        input: &str,
+        external_scanner: Option<&dyn ExternalScannerHost>,
+    ) -> Result<WeavyParseReport, WeavyParseError> {
+        parse_borrowed_weavy_with_report_and_scanner(
+            &self.plan,
+            &self.parser_grammar,
+            &self.parse_table,
+            &self.facts,
+            input,
+            external_scanner,
+        )
+    }
+
+    /// Whether the runtime rows refer to the exact supplied module byte slice.
+    pub fn runtime_ranges_borrow(&self, bytes: &[u8]) -> bool {
+        std::ptr::eq(self.bytes.as_ptr(), bytes.as_ptr()) && self.bytes.len() == bytes.len()
+    }
+}
 
 impl SnarkModule {
     /// Compile grammar JSON into a runtime-only self-contained module.
@@ -814,6 +847,79 @@ impl SnarkModule {
             parser_grammar,
             parse_table,
             plan,
+        })
+    }
+
+    /// Load a Snark module while borrowing all dense runtime fact rows from `bytes`.
+    pub fn load_borrowed(bytes: &[u8]) -> Result<BorrowedSnarkModule<'_>, SnarkModuleError> {
+        let module =
+            weavy_phon::load_borrowed::<SnarkCodec>(bytes).map_err(SnarkModuleError::Codec)?;
+        module
+            .admit(&ModuleVerifier::new([DialectRequirement::new(
+                "snark", 1, 0,
+            )]))
+            .map_err(SnarkModuleError::Admission)?;
+        let constants = module.constants();
+        if constants.len() != 4 {
+            return Err(SnarkModuleError::WrongConstantCount(constants.len()));
+        }
+        let parser_grammar: ParserGrammar =
+            api::decode(constants[1].bytes()).map_err(SnarkModuleError::Phon)?;
+        let parse_table: ParseTable =
+            api::decode(constants[2].bytes()).map_err(SnarkModuleError::Phon)?;
+        let parse_data: WeavyParsePlanData =
+            api::decode(constants[3].bytes()).map_err(SnarkModuleError::Phon)?;
+        let plan = WeavyParsePlan::from_artifact_data(parse_data, &parser_grammar, &parse_table)?;
+        let ranges = [
+            module.dense_range(RANGE_RUNTIME_HEADER as usize),
+            module.dense_range(RANGE_PARSE_STATES as usize),
+            module.dense_range(RANGE_ACTION_ENTRIES as usize),
+            module.dense_range(RANGE_GOTOS as usize),
+            module.dense_range(RANGE_LEX_MODES as usize),
+            module.dense_range(RANGE_LEX_TERMINALS as usize),
+            module.dense_range(RANGE_LEX_EXTERNALS as usize),
+            module.dense_range(RANGE_PRODUCTIONS as usize),
+            module.dense_range(RANGE_PRODUCTION_STEPS as usize),
+            module.dense_range(RANGE_PRODUCTION_METADATA as usize),
+            module.dense_range(RANGE_EXTERNALS as usize),
+            module.dense_range(RANGE_RESERVED_TERMINALS as usize),
+            module.dense_range(RANGE_VALID_SYMBOL_EXTERNALS as usize),
+        ];
+        let [
+            header,
+            states,
+            action_entries,
+            gotos,
+            lex_modes,
+            lex_terminals,
+            lex_externals,
+            productions,
+            production_steps,
+            production_metadata,
+            externals,
+            reserved_terminals,
+            valid_symbol_externals,
+        ] = ranges.map(|range| range.map_err(SnarkModuleError::Codec));
+        Ok(BorrowedSnarkModule {
+            bytes,
+            parser_grammar,
+            parse_table,
+            plan,
+            facts: BorrowedRuntimeParserFacts::new([
+                header?,
+                states?,
+                action_entries?,
+                gotos?,
+                lex_modes?,
+                lex_terminals?,
+                lex_externals?,
+                productions?,
+                production_steps?,
+                production_metadata?,
+                externals?,
+                reserved_terminals?,
+                valid_symbol_externals?,
+            ]),
         })
     }
 

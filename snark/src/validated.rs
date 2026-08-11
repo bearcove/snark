@@ -691,7 +691,7 @@ impl ExternalTokenOrdinal {
 pub struct FieldId(u32);
 
 impl FieldId {
-    fn from_index(index: usize) -> Result<Self, GrammarValidationError> {
+    pub(crate) fn from_index(index: usize) -> Result<Self, GrammarValidationError> {
         u32::try_from(index).map(Self).map_err(|_| {
             GrammarValidationError::new(GrammarValidationErrorKind::IdOverflow {
                 domain: "field",
@@ -711,7 +711,7 @@ impl FieldId {
 pub struct AliasId(u32);
 
 impl AliasId {
-    fn from_index(index: usize) -> Result<Self, GrammarValidationError> {
+    pub(crate) fn from_index(index: usize) -> Result<Self, GrammarValidationError> {
         u32::try_from(index).map(Self).map_err(|_| {
             GrammarValidationError::new(GrammarValidationErrorKind::IdOverflow {
                 domain: "alias",

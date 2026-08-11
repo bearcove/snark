@@ -84,11 +84,10 @@ fn module_inspection_reports_snark_constants_and_sections() {
 }
 
 #[test]
-#[ignore = "RED: loaded parser must execute over ranges borrowed from module bytes"]
 fn loaded_module_borrows_runtime_ranges_from_file_bytes() {
     let built = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
     let bytes = built.save().expect("save");
-    let loaded = SnarkModule::load(&bytes).expect("load");
+    let loaded = SnarkModule::load_borrowed(&bytes).expect("load");
     assert!(loaded.runtime_ranges_borrow(&bytes));
     assert_eq!(
         loaded.parse("letName", None).expect("parse"),
