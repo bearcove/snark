@@ -34,6 +34,7 @@ tree-sitter-import = ["json-import"]
 aho-corasick.workspace = true
 blake3.workspace = true
 facet = { workspace = true, features = ["indexmap"] }
+facet-value.workspace = true
 facet-json = { workspace = true, optional = true }
 facet-postcard.workspace = true
 indexmap.workspace = true
@@ -43,6 +44,8 @@ smallvec.workspace = true
 weavy.workspace = true
 weavy-phon.workspace = true
 phon.workspace = true
+phon-schema.workspace = true
+phon-storage.workspace = true
 
 [dev-dependencies]
 facet-styx.workspace = true

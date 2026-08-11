@@ -29,15 +29,10 @@ fn module_round_trip_matches_live_parser_without_construction_workspace() {
 
     assert_eq!(first, second);
     assert_eq!(loaded_tree, live);
-    assert!(loaded.parse_table().item_sets().is_empty());
-    assert!(loaded.parse_table().transitions().is_empty());
+    assert_eq!(loaded.runtime_state_count(), built.runtime_state_count());
     assert_eq!(
-        loaded.parse_table().states().len(),
-        built.parse_table().states().len()
-    );
-    assert_eq!(
-        loaded.parse_table().conflicts().len(),
-        built.parse_table().conflicts().len()
+        loaded.runtime_conflict_count(),
+        built.runtime_conflict_count()
     );
     assert_eq!(loaded.regex_compile_count(), loaded.unique_regex_count());
 }
@@ -48,6 +43,13 @@ fn module_inspection_reports_snark_constants_and_sections() {
     let bytes = built.save().expect("save");
     let report: SnarkModuleInspection = SnarkModule::inspect(&bytes).expect("inspect");
     assert_eq!(report.constant_count, 4);
+    assert_eq!(report.constant_ranges.len(), 5);
+    assert!(
+        report
+            .constant_ranges
+            .iter()
+            .all(|range| range.profile == weavy::module::StorageProfile::DenseAligned)
+    );
     assert!(
         report
             .sections
@@ -65,5 +67,18 @@ fn module_inspection_reports_snark_constants_and_sections() {
             .dialects
             .iter()
             .any(|dialect| dialect.name() == "snark")
+    );
+}
+
+#[test]
+#[ignore = "RED: loaded parser must execute over ranges borrowed from module bytes"]
+fn loaded_module_borrows_runtime_ranges_from_file_bytes() {
+    let built = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
+    let bytes = built.save().expect("save");
+    let loaded = SnarkModule::load(&bytes).expect("load");
+    assert!(loaded.runtime_ranges_borrow(&bytes));
+    assert_eq!(
+        loaded.parse("letName", None).expect("parse"),
+        built.parse("letName", None).expect("live"),
     );
 }

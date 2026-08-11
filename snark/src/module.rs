@@ -3,14 +3,21 @@
 use core::fmt;
 
 use facet::Facet;
+use facet_value::{VArray, VObject, VString, Value};
 use phon::api;
+use phon_schema::{
+    Field, Primitive, Schema, SchemaId, SchemaKind, SchemaRef, primitive_id, resolve_ids,
+};
+use phon_storage::{AlignedRegistry, DenseRangeWriter};
 use weavy::DenseLowered;
 use weavy::ir::WeavyOp;
 use weavy::module::{
-    Constant, ConstantId, ConstantPool, ConstantReference, DialectRequirement, IntrinsicContract,
-    ModuleManifest, ModuleVerifier, WeavyModule,
+    Constant, ConstantId, ConstantPool, ConstantRange, ConstantReference, DialectRequirement,
+    IntrinsicContract, ModuleManifest, ModuleVerifier, StorageProfile, WeavyModule,
 };
-use weavy_phon::{CodecError, InspectionReport, IntrinsicCodec, SectionReport};
+use weavy_phon::{
+    CodecError, ConstantRangeReport, InspectionReport, IntrinsicCodec, SectionReport,
+};
 
 use crate::artifact::{ArtifactBuildError, GrammarFingerprint, ParserArtifactBuilder};
 use crate::lower::weavy::{
@@ -58,6 +65,311 @@ struct SnarkModuleData {
     parse_plan: WeavyParsePlanData,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RuntimeHeaderRow {
+    fingerprint_0: u64,
+    fingerprint_1: u64,
+    fingerprint_2: u64,
+    fingerprint_3: u64,
+    state_count: u32,
+    conflict_count: u32,
+    production_count: u32,
+    metadata_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ParseStateRow {
+    lex_mode: u32,
+    first_entry: u32,
+    entry_count: u32,
+    first_goto: u32,
+    goto_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProductionRow {
+    first_step: u32,
+    step_count: u32,
+    metadata: u32,
+    dynamic_precedence: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProductionStepRow {
+    symbol_kind: u8,
+    symbol: u32,
+    field: u32,
+    alias: u32,
+    alias_named: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProductionMetadataRow {
+    public_node: u32,
+    dynamic_precedence: i32,
+}
+
+struct RuntimeRanges {
+    schemas: Vec<Schema>,
+    header: ConstantRange,
+    states: ConstantRange,
+    productions: ConstantRange,
+    production_steps: ConstantRange,
+    production_metadata: ConstantRange,
+}
+
+impl RuntimeRanges {
+    fn from_runtime(
+        fingerprint: GrammarFingerprint,
+        parser: &ParserGrammar,
+        table: &ParseTable,
+    ) -> Result<Self, SnarkModuleError> {
+        let header_rows = vec![RuntimeHeaderRow {
+            fingerprint_0: u64::from_le_bytes(fingerprint[0..8].try_into().expect("length")),
+            fingerprint_1: u64::from_le_bytes(fingerprint[8..16].try_into().expect("length")),
+            fingerprint_2: u64::from_le_bytes(fingerprint[16..24].try_into().expect("length")),
+            fingerprint_3: u64::from_le_bytes(fingerprint[24..32].try_into().expect("length")),
+            state_count: u32::try_from(table.states().len())
+                .map_err(|_| SnarkModuleError::SizeOverflow)?,
+            conflict_count: u32::try_from(table.conflicts().len())
+                .map_err(|_| SnarkModuleError::SizeOverflow)?,
+            production_count: u32::try_from(parser.productions().len())
+                .map_err(|_| SnarkModuleError::SizeOverflow)?,
+            metadata_count: u32::try_from(parser.production_metadata().len())
+                .map_err(|_| SnarkModuleError::SizeOverflow)?,
+        }];
+        let mut first_entry = 0u32;
+        let mut first_goto = 0u32;
+        let states = table
+            .states()
+            .iter()
+            .map(|state| {
+                let row = ParseStateRow {
+                    lex_mode: state.lex_mode().get(),
+                    first_entry,
+                    entry_count: u32::try_from(state.entries().len())
+                        .expect("state entry overflow"),
+                    first_goto,
+                    goto_count: u32::try_from(state.gotos().len()).expect("state goto overflow"),
+                };
+                first_entry += row.entry_count;
+                first_goto += row.goto_count;
+                row
+            })
+            .collect::<Vec<_>>();
+        let mut first_step = 0u32;
+        let productions = parser
+            .productions()
+            .iter()
+            .map(|production| {
+                let row = ProductionRow {
+                    first_step,
+                    step_count: u32::try_from(production.steps().len())
+                        .expect("production step overflow"),
+                    metadata: production.metadata().get(),
+                    dynamic_precedence: production.dynamic_precedence(),
+                };
+                first_step += row.step_count;
+                row
+            })
+            .collect::<Vec<_>>();
+        let production_steps = parser
+            .productions()
+            .iter()
+            .flat_map(|production| production.steps())
+            .map(|step| {
+                let (symbol_kind, symbol) = match step.symbol() {
+                    crate::parser::ParserSymbol::Terminal(id) => (0, id.get()),
+                    crate::parser::ParserSymbol::Nonterminal(id) => (1, id.get()),
+                    crate::parser::ParserSymbol::External(id) => (2, id.get()),
+                    crate::parser::ParserSymbol::Eof => (3, 0),
+                    crate::parser::ParserSymbol::Internal(id) => (4, id.get()),
+                };
+                ProductionStepRow {
+                    symbol_kind,
+                    symbol,
+                    field: step.field().map_or(u32::MAX, |id| id.get()),
+                    alias: step.alias().map_or(u32::MAX, |id| id.get()),
+                    alias_named: step.alias_named().map_or(2, u8::from),
+                }
+            })
+            .collect::<Vec<_>>();
+        let production_metadata = parser
+            .production_metadata()
+            .iter()
+            .map(|metadata| ProductionMetadataRow {
+                public_node: metadata.public_node().map_or(u32::MAX, |id| id.get()),
+                dynamic_precedence: metadata.dynamic_precedence(),
+            })
+            .collect::<Vec<_>>();
+        let mut schemas = Vec::new();
+        let header = dense_range("SnarkRuntimeHeader", &header_rows, &mut schemas)?;
+        let states = dense_range("SnarkParseState", &states, &mut schemas)?;
+        let productions = dense_range("SnarkProduction", &productions, &mut schemas)?;
+        let production_steps = dense_range("SnarkProductionStep", &production_steps, &mut schemas)?;
+        let production_metadata = dense_range(
+            "SnarkProductionMetadata",
+            &production_metadata,
+            &mut schemas,
+        )?;
+        Ok(Self {
+            schemas,
+            header,
+            states,
+            productions,
+            production_steps,
+            production_metadata,
+        })
+    }
+
+    fn into_ranges(self) -> Vec<ConstantRange> {
+        vec![
+            self.header,
+            self.states,
+            self.productions,
+            self.production_steps,
+            self.production_metadata,
+        ]
+    }
+}
+
+trait DenseRow {
+    fn fields() -> Vec<(&'static str, Primitive)>;
+    fn value(&self) -> Value;
+}
+
+fn dense_range<T: DenseRow>(
+    name: &str,
+    rows: &[T],
+    schemas: &mut Vec<Schema>,
+) -> Result<ConstantRange, SnarkModuleError> {
+    let row = Schema {
+        id: SchemaId::from_raw(1),
+        type_params: Vec::new(),
+        kind: SchemaKind::Struct {
+            name: name.into(),
+            fields: T::fields()
+                .into_iter()
+                .map(|(name, primitive)| Field {
+                    name: name.into(),
+                    schema: SchemaRef::concrete(primitive_id(primitive)),
+                    required: true,
+                })
+                .collect(),
+        },
+    };
+    let list = Schema {
+        id: SchemaId::from_raw(2),
+        type_params: Vec::new(),
+        kind: SchemaKind::List {
+            element: SchemaRef::concrete(row.id),
+        },
+    };
+    let range_schemas = resolve_ids(vec![row, list]);
+    let root = range_schemas[1].id;
+    let registry = AlignedRegistry::new(range_schemas.clone());
+    let values = rows.iter().map(DenseRow::value).collect::<VArray>();
+    let bytes = DenseRangeWriter::encode(&values.into(), root, &registry)
+        .map_err(|error| SnarkModuleError::Codec(CodecError::Aligned(error)))?;
+    let dense = phon_storage::DenseRange::parse(&bytes, root, &registry)
+        .map_err(|error| SnarkModuleError::Codec(CodecError::Aligned(error)))?;
+    schemas.extend(range_schemas.clone());
+    ConstantRange::new(
+        range_schemas,
+        1,
+        StorageProfile::DenseAligned,
+        u32::try_from(rows.len()).map_err(|_| SnarkModuleError::SizeOverflow)?,
+        u32::try_from(dense.stride()).map_err(|_| SnarkModuleError::SizeOverflow)?,
+        bytes,
+    )
+    .map_err(|error| SnarkModuleError::Codec(CodecError::ConstantRange(error)))
+}
+
+fn row_value(fields: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
+    let mut object = VObject::new();
+    for (name, value) in fields {
+        object.insert(VString::new(name), value);
+    }
+    object.into()
+}
+
+impl DenseRow for RuntimeHeaderRow {
+    fn fields() -> Vec<(&'static str, Primitive)> {
+        vec![
+            ("fingerprint_0", Primitive::U64),
+            ("fingerprint_1", Primitive::U64),
+            ("fingerprint_2", Primitive::U64),
+            ("fingerprint_3", Primitive::U64),
+            ("state_count", Primitive::U32),
+            ("conflict_count", Primitive::U32),
+            ("production_count", Primitive::U32),
+            ("metadata_count", Primitive::U32),
+        ]
+    }
+    fn value(&self) -> Value {
+        row_value([
+            ("fingerprint_0", Value::from(self.fingerprint_0)),
+            ("fingerprint_1", Value::from(self.fingerprint_1)),
+            ("fingerprint_2", Value::from(self.fingerprint_2)),
+            ("fingerprint_3", Value::from(self.fingerprint_3)),
+            ("state_count", Value::from(self.state_count)),
+            ("conflict_count", Value::from(self.conflict_count)),
+            ("production_count", Value::from(self.production_count)),
+            ("metadata_count", Value::from(self.metadata_count)),
+        ])
+    }
+}
+
+macro_rules! dense_row {
+    ($type:ty, [$(($field:ident, $primitive:expr)),+ $(,)?]) => {
+        impl DenseRow for $type {
+            fn fields() -> Vec<(&'static str, Primitive)> {
+                vec![$((stringify!($field), $primitive)),+]
+            }
+            fn value(&self) -> Value {
+                row_value([$((stringify!($field), Value::from(self.$field))),+])
+            }
+        }
+    };
+}
+
+dense_row!(
+    ParseStateRow,
+    [
+        (lex_mode, Primitive::U32),
+        (first_entry, Primitive::U32),
+        (entry_count, Primitive::U32),
+        (first_goto, Primitive::U32),
+        (goto_count, Primitive::U32),
+    ]
+);
+dense_row!(
+    ProductionRow,
+    [
+        (first_step, Primitive::U32),
+        (step_count, Primitive::U32),
+        (metadata, Primitive::U32),
+        (dynamic_precedence, Primitive::I32),
+    ]
+);
+dense_row!(
+    ProductionStepRow,
+    [
+        (symbol_kind, Primitive::U8),
+        (symbol, Primitive::U32),
+        (field, Primitive::U32),
+        (alias, Primitive::U32),
+        (alias_named, Primitive::U8),
+    ]
+);
+dense_row!(
+    ProductionMetadataRow,
+    [
+        (public_node, Primitive::U32),
+        (dynamic_precedence, Primitive::I32),
+    ]
+);
+
 /// A self-contained admitted Snark parser module.
 pub struct SnarkModule {
     grammar_fingerprint: GrammarFingerprint,
@@ -104,6 +416,11 @@ impl SnarkModule {
         let grammar = api::encode(&data.parser_grammar).map_err(SnarkModuleError::Phon)?;
         let table = api::encode(&data.parse_table).map_err(SnarkModuleError::Phon)?;
         let plan = api::encode(&data.parse_plan).map_err(SnarkModuleError::Phon)?;
+        let ranges = RuntimeRanges::from_runtime(
+            self.grammar_fingerprint,
+            &self.parser_grammar,
+            &self.parse_table,
+        )?;
         let module = WeavyModule::new(
             ModuleManifest::new(
                 "snark.parser",
@@ -130,7 +447,8 @@ impl SnarkModule {
                 Constant::new(PARSE_TABLE_SCHEMA, table),
                 Constant::new(PARSE_PLAN_SCHEMA, plan),
             ]),
-        );
+        )
+        .with_constant_ranges(ranges.into_ranges());
         weavy_phon::save::<SnarkCodec>(&module).map_err(SnarkModuleError::Codec)
     }
 
@@ -204,6 +522,23 @@ impl SnarkModule {
         )
     }
 
+    /// Whether parsing currently consumes runtime facts borrowed from these exact module bytes.
+    ///
+    /// This remains false until the owned parser/table reconstruction path is removed.
+    pub fn runtime_ranges_borrow(&self, _bytes: &[u8]) -> bool {
+        false
+    }
+
+    /// Number of runtime parse-state rows.
+    pub fn runtime_state_count(&self) -> usize {
+        self.parse_table.states().len()
+    }
+
+    /// Number of retained GLR conflict rows.
+    pub fn runtime_conflict_count(&self) -> usize {
+        self.parse_table.conflicts().len()
+    }
+
     /// Parse input with skip-invalid recovery using runtime facts owned by this module.
     pub fn parse_recovering(
         &self,
@@ -256,6 +591,8 @@ pub struct SnarkModuleInspection {
     pub sections: Vec<SectionReport>,
     /// Number of module-local constants.
     pub constant_count: usize,
+    /// Typed runtime ranges declared by the module.
+    pub constant_ranges: Vec<ConstantRangeReport>,
 }
 
 impl From<InspectionReport> for SnarkModuleInspection {
@@ -265,6 +602,7 @@ impl From<InspectionReport> for SnarkModuleInspection {
             dialects: report.dialects,
             sections: report.sections,
             constant_count: report.constant_count,
+            constant_ranges: report.constant_ranges,
         }
     }
 }
@@ -339,6 +677,8 @@ pub enum SnarkModuleError {
     WrongConstantCount(usize),
     /// The grammar fingerprint constant did not contain exactly 32 bytes.
     MalformedGrammarFingerprint,
+    /// A generated runtime table exceeded portable module widths.
+    SizeOverflow,
 }
 
 impl From<ArtifactBuildError> for SnarkModuleError {
