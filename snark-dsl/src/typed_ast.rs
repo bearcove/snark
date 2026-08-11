@@ -428,6 +428,15 @@ impl<'a> Model<'a> {
                 struct_kinds.push((kind.to_string(), fields));
             }
         }
+        // Resolve every enum member before emission so unsupported leaves cannot
+        // survive into infallible code generation and panic through `unwrap()`.
+        for definition in &model.enums {
+            for kind in &definition.member_kinds {
+                if model.hidden_enum(kind).is_none() && !model.is_struct_kind(kind) {
+                    model.leaf_decode(kind)?;
+                }
+            }
+        }
         for (kind, fields) in struct_kinds {
             let fields = fields
                 .0
@@ -1561,6 +1570,40 @@ module.exports = grammar({
             error,
             GenerateTypedAstError::UnsupportedShape { rule, detail }
                 if rule == "source_file" && detail.contains("mixes tokens and rules")
+        ));
+    }
+
+    #[test]
+    fn invalid_hidden_enum_leaf_returns_structured_error() {
+        let (grammar_json, annotations_json) = crate::emit_source_with_annotations_boa(
+            r#"
+module.exports = grammar({
+  name: "invalid_enum",
+  rules: {
+    source_file: $ => field("item", $._item),
+    _item: $ => choice($.bad_leaf),
+    bad_leaf: $ => /[a-z]+/,
+  },
+});
+ast({
+  _item: { enum: "Item" },
+  bad_leaf: { decode: "unsupported" },
+});
+"#,
+            "invalid-enum.js",
+        )
+        .unwrap();
+        let raw = RawGrammarJson::from_tree_sitter_json_str(&grammar_json).unwrap();
+        let anns: Annotations = facet_json::from_str(&annotations_json).unwrap();
+
+        let error = match Model::build(&raw, &anns) {
+            Ok(_) => panic!("invalid enum leaf unexpectedly generated"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            GenerateTypedAstError::UnsupportedShape { rule, detail }
+                if rule == "bad_leaf" && detail.contains("unknown decode")
         ));
     }
 
