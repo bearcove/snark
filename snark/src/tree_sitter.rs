@@ -2821,9 +2821,10 @@ mod tests {
                 .max()
                 .map_or(0, |ordinal| ordinal + 1);
             let mut mask = vec![false; width];
-            if let Some(valid_symbols) = request.valid_symbols() {
-                for external in valid_symbols.externals() {
-                    let ordinal = self.ordinal_for(*external)?;
+            if request.has_valid_symbols() {
+                for index in 0..request.valid_symbol_count()? {
+                    let external = request.valid_symbol(index)?;
+                    let ordinal = self.ordinal_for(external)?;
                     mask[ordinal] = true;
                 }
             } else {
@@ -2922,9 +2923,9 @@ mod tests {
                 self.requests_with_snapshot
                     .set(self.requests_with_snapshot.get() + 1);
             }
-            match request.valid_symbols() {
-                Some(valid_symbols) if valid_symbols.externals().contains(&request.external()) => {}
-                Some(_) => {
+            match request.is_valid_symbol(request.external()) {
+                Some(true) => {}
+                Some(false) => {
                     self.invalid_symbol_requests
                         .set(self.invalid_symbol_requests.get() + 1);
                     return Ok(None);
@@ -2937,7 +2938,7 @@ mod tests {
             let result = self.inner.scan(request)?;
             if result.is_some() {
                 self.accepted.set(self.accepted.get() + 1);
-                match request.external_symbol().name() {
+                match request.external_name() {
                     Some("_pseudo_class_selector_colon") => self
                         .accepted_pseudo_class_selector_colon
                         .set(self.accepted_pseudo_class_selector_colon.get() + 1),

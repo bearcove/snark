@@ -2637,6 +2637,16 @@ impl ReservedContext {
     }
 }
 
+impl ExternalValidSymbols for ValidSymbolSet {
+    fn len(&self) -> usize {
+        self.externals.len()
+    }
+
+    fn get(&self, index: usize) -> Option<ExternalId> {
+        self.externals.get(index).copied()
+    }
+}
+
 /// External scanner valid-symbol set.
 #[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ValidSymbolSet {
@@ -4385,23 +4395,30 @@ impl ExternalScanResult {
 }
 
 /// Branch-local external scanner request.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ExternalScanRequest<'a> {
     state: ParseStateId,
     external: ExternalId,
-    external_symbol: &'a ExternalSymbol,
-    valid_symbols: Option<&'a ValidSymbolSet>,
+    external_ordinal: u32,
+    external_name: Option<&'a str>,
+    valid_symbols: Option<&'a dyn ExternalValidSymbols>,
     input: &'a str,
     byte_position: usize,
     scanner_snapshot: Option<ScannerSnapshotId>,
+}
+
+pub(crate) trait ExternalValidSymbols {
+    fn len(&self) -> usize;
+    fn get(&self, index: usize) -> Option<ExternalId>;
 }
 
 impl ExternalScanRequest<'_> {
     pub(crate) const fn new<'a>(
         state: ParseStateId,
         external: ExternalId,
-        external_symbol: &'a ExternalSymbol,
-        valid_symbols: Option<&'a ValidSymbolSet>,
+        external_ordinal: u32,
+        external_name: Option<&'a str>,
+        valid_symbols: Option<&'a dyn ExternalValidSymbols>,
         input: &'a str,
         byte_position: usize,
         scanner_snapshot: Option<ScannerSnapshotId>,
@@ -4409,7 +4426,8 @@ impl ExternalScanRequest<'_> {
         ExternalScanRequest {
             state,
             external,
-            external_symbol,
+            external_ordinal,
+            external_name,
             valid_symbols,
             input,
             byte_position,
@@ -4427,14 +4445,35 @@ impl ExternalScanRequest<'_> {
         self.external
     }
 
-    /// External symbol metadata.
-    pub const fn external_symbol(&self) -> &ExternalSymbol {
-        self.external_symbol
+    /// External scanner ordinal from the grammar's `externals` list.
+    pub const fn external_ordinal(&self) -> u32 {
+        self.external_ordinal
     }
 
-    /// Valid-symbol set for this parser state, if any.
-    pub const fn valid_symbols(&self) -> Option<&ValidSymbolSet> {
-        self.valid_symbols
+    /// Optional external token name.
+    pub const fn external_name(&self) -> Option<&str> {
+        self.external_name
+    }
+
+    /// Whether the parser state supplied an explicit valid-symbol set.
+    pub const fn has_valid_symbols(&self) -> bool {
+        self.valid_symbols.is_some()
+    }
+
+    /// Number of external symbols in the explicit valid-symbol set.
+    pub fn valid_symbol_count(&self) -> Option<usize> {
+        self.valid_symbols.map(ExternalValidSymbols::len)
+    }
+
+    /// External symbol at `index` in the explicit valid-symbol set.
+    pub fn valid_symbol(&self, index: usize) -> Option<ExternalId> {
+        self.valid_symbols.and_then(|symbols| symbols.get(index))
+    }
+
+    /// Whether an external symbol belongs to the explicit valid-symbol set.
+    pub fn is_valid_symbol(&self, external: ExternalId) -> Option<bool> {
+        let symbols = self.valid_symbols?;
+        Some((0..symbols.len()).any(|index| symbols.get(index) == Some(external)))
     }
 
     /// Source input being parsed.

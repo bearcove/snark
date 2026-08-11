@@ -1383,9 +1383,10 @@ impl CssBundleExternalScanner {
             .max()
             .map_or(0, |ordinal| ordinal + 1);
         let mut mask = vec![false; width];
-        if let Some(valid_symbols) = request.valid_symbols() {
-            for external in valid_symbols.externals() {
-                let ordinal = self.ordinal_for(*external)?;
+        if request.has_valid_symbols() {
+            for index in 0..request.valid_symbol_count()? {
+                let external = request.valid_symbol(index)?;
+                let ordinal = self.ordinal_for(external)?;
                 mask[ordinal] = true;
             }
         } else {

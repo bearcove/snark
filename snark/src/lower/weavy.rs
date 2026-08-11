@@ -2643,15 +2643,7 @@ impl WeavyParseWorkspace {
         input: &str,
         external_scanner: Option<&dyn ExternalScannerHost>,
     ) -> Result<SexpNode, WeavyParseError> {
-        let input_ctx = RuntimeWeavyInput {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            input,
-            external_scanner,
-        };
+        let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
         if let Some(tree) = parse_weavy_deterministic_with_execution_and_scratch::<
             RuntimeWeavyDeterministicTreeSink,
         >(
@@ -2694,15 +2686,7 @@ impl WeavyParseWorkspace {
         input: &str,
         external_scanner: Option<&dyn ExternalScannerHost>,
     ) -> Result<parser_ir::ResolvedCstNode, WeavyParseError> {
-        let input_ctx = RuntimeWeavyInput {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            input,
-            external_scanner,
-        };
+        let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
         if let Some(tree) = parse_weavy_deterministic_with_execution_and_scratch::<
             RuntimeWeavyDeterministicResolvedTreeSink,
         >(
@@ -2749,15 +2733,7 @@ impl WeavyParseWorkspace {
         input: &str,
         external_scanner: Option<&dyn ExternalScannerHost>,
     ) -> Result<parser_ir::ResolvedCstTree, WeavyParseError> {
-        let input_ctx = RuntimeWeavyInput {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            input,
-            external_scanner,
-        };
+        let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
         if let Some(tree) = parse_weavy_deterministic_with_execution_and_scratch::<
             RuntimeWeavyDeterministicResolvedCstSink,
         >(
@@ -2804,15 +2780,7 @@ impl WeavyParseWorkspace {
         input: &str,
         external_scanner: Option<&dyn ExternalScannerHost>,
     ) -> Result<WeavyResolvedCstReport, WeavyParseError> {
-        let input_ctx = RuntimeWeavyInput {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            input,
-            external_scanner,
-        };
+        let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
         if let Some(report) = parse_weavy_deterministic_with_execution_and_scratch::<
             RuntimeWeavyDeterministicResolvedCstReportSink,
         >(
@@ -2854,15 +2822,7 @@ impl WeavyParseWorkspace {
         input: &str,
         external_scanner: Option<&dyn ExternalScannerHost>,
     ) -> Result<WeavyParseReport, WeavyParseError> {
-        let input_ctx = RuntimeWeavyInput {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            input,
-            external_scanner,
-        };
+        let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
         if let Some(report) = parse_weavy_deterministic_with_execution_and_scratch::<
             RuntimeWeavyDeterministicCollectingReportSink,
         >(
@@ -2893,15 +2853,7 @@ impl WeavyParseWorkspace {
         input: &str,
         external_scanner: Option<&dyn ExternalScannerHost>,
     ) -> Result<WeavyParseReport, WeavyParseError> {
-        let input_ctx = RuntimeWeavyInput {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            input,
-            external_scanner,
-        };
+        let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
         if let Some(report) = parse_weavy_deterministic_with_execution_and_scratch::<
             RuntimeWeavyDeterministicCollectingReportSink,
         >(
@@ -2940,15 +2892,7 @@ impl WeavyParseWorkspace {
         validate_weavy_edit(edit, old_input, new_input)?;
         let reuse_index = RuntimeWeavyReuseIndex::from_report(previous_report, edit);
         parse_weavy_with_lexer_program_and_scratch(
-            RuntimeWeavyInput {
-                plan,
-                lexer_program: &plan.lexer_program,
-                auto_close_index: &plan.auto_close_index,
-                parser,
-                table,
-                input: new_input,
-                external_scanner,
-            },
+            RuntimeWeavyInput::owned(plan, parser, table, new_input, external_scanner),
             RuntimeWeavyRecoveryMode::Strict,
             Some(&reuse_index),
             RuntimeWeavyReuseCollection::Enabled,
@@ -2976,15 +2920,7 @@ impl WeavyParseWorkspace {
         validate_weavy_edit(edit, old_input, new_input)?;
         let reuse_index = RuntimeWeavyReuseIndex::from_report(previous_report, edit);
         parse_weavy_with_lexer_program_and_scratch(
-            RuntimeWeavyInput {
-                plan,
-                lexer_program: &plan.lexer_program,
-                auto_close_index: &plan.auto_close_index,
-                parser,
-                table,
-                input: new_input,
-                external_scanner,
-            },
+            RuntimeWeavyInput::owned(plan, parser, table, new_input, external_scanner),
             RuntimeWeavyRecoveryMode::SkipInvalidInput,
             Some(&reuse_index),
             RuntimeWeavyReuseCollection::Enabled,
@@ -6740,6 +6676,22 @@ struct RuntimeExternalFacts {
     ordinal: u32,
 }
 
+struct RuntimeValidSymbols<'a, Facts> {
+    facts: &'a Facts,
+    set: parser_ir::ValidSymbolSetId,
+    count: usize,
+}
+
+impl<Facts: RuntimeParserFacts> parser_ir::ExternalValidSymbols for RuntimeValidSymbols<'_, Facts> {
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    fn get(&self, index: usize) -> Option<parser_ir::ExternalId> {
+        self.facts.valid_symbol_external(self.set, index)
+    }
+}
+
 trait RuntimeParserFacts {
     fn parse_state(&self, state: parser_ir::ParseStateId) -> Option<RuntimeParseStateFacts>;
     fn lex_mode(&self, mode: parser_ir::LexModeId) -> Option<RuntimeLexModeFacts>;
@@ -6753,10 +6705,11 @@ trait RuntimeParserFacts {
         state: parser_ir::ParseStateId,
         nonterminal: parser_ir::NonterminalId,
     ) -> Option<parser_ir::ParseStateId>;
-    fn reserved_context(
+    fn reserved_terminal(
         &self,
         context: parser_ir::ReservedContextId,
-    ) -> Option<&parser_ir::ReservedContext>;
+        terminal: parser_ir::TerminalId,
+    ) -> Option<bool>;
     fn lex_mode_terminal(
         &self,
         mode: parser_ir::LexModeId,
@@ -6840,12 +6793,19 @@ impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
         self.program.goto_state(state, nonterminal)
     }
 
-    fn reserved_context(
+    fn reserved_terminal(
         &self,
         context: parser_ir::ReservedContextId,
-    ) -> Option<&parser_ir::ReservedContext> {
+        terminal: parser_ir::TerminalId,
+    ) -> Option<bool> {
         Self::record_read();
-        self.parser.reserved_contexts().get(context.get() as usize)
+        Some(
+            self.parser
+                .reserved_contexts()
+                .get(context.get() as usize)?
+                .entries()
+                .contains(&terminal),
+        )
     }
 
     fn lex_mode_terminal(
@@ -6955,6 +6915,121 @@ impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
         })
     }
 }
+#[derive(Clone, Copy)]
+enum RuntimeParserFactsProvider<'a> {
+    Owned(OwnedRuntimeParserFacts<'a>),
+}
+
+impl RuntimeParserFacts for RuntimeParserFactsProvider<'_> {
+    fn parse_state(&self, state: parser_ir::ParseStateId) -> Option<RuntimeParseStateFacts> {
+        match self {
+            Self::Owned(facts) => facts.parse_state(state),
+        }
+    }
+
+    fn lex_mode(&self, mode: parser_ir::LexModeId) -> Option<RuntimeLexModeFacts> {
+        match self {
+            Self::Owned(facts) => facts.lex_mode(mode),
+        }
+    }
+
+    fn action_entry(
+        &self,
+        state: parser_ir::ParseStateId,
+        lookahead: parser_ir::LookaheadSymbol,
+    ) -> Option<RuntimeWeavyActionEntry> {
+        match self {
+            Self::Owned(facts) => facts.action_entry(state, lookahead),
+        }
+    }
+
+    fn goto_state(
+        &self,
+        state: parser_ir::ParseStateId,
+        nonterminal: parser_ir::NonterminalId,
+    ) -> Option<parser_ir::ParseStateId> {
+        match self {
+            Self::Owned(facts) => facts.goto_state(state, nonterminal),
+        }
+    }
+
+    fn reserved_terminal(
+        &self,
+        context: parser_ir::ReservedContextId,
+        terminal: parser_ir::TerminalId,
+    ) -> Option<bool> {
+        match self {
+            Self::Owned(facts) => facts.reserved_terminal(context, terminal),
+        }
+    }
+
+    fn lex_mode_terminal(
+        &self,
+        mode: parser_ir::LexModeId,
+        index: usize,
+    ) -> Option<parser_ir::TerminalId> {
+        match self {
+            Self::Owned(facts) => facts.lex_mode_terminal(mode, index),
+        }
+    }
+
+    fn lex_mode_external(
+        &self,
+        mode: parser_ir::LexModeId,
+        index: usize,
+    ) -> Option<parser_ir::ExternalId> {
+        match self {
+            Self::Owned(facts) => facts.lex_mode_external(mode, index),
+        }
+    }
+
+    fn external_symbol(&self, external: parser_ir::ExternalId) -> Option<RuntimeExternalFacts> {
+        match self {
+            Self::Owned(facts) => facts.external_symbol(external),
+        }
+    }
+
+    fn valid_symbol_external(
+        &self,
+        set: parser_ir::ValidSymbolSetId,
+        index: usize,
+    ) -> Option<parser_ir::ExternalId> {
+        match self {
+            Self::Owned(facts) => facts.valid_symbol_external(set, index),
+        }
+    }
+
+    fn valid_symbol_count(&self, set: parser_ir::ValidSymbolSetId) -> Option<usize> {
+        match self {
+            Self::Owned(facts) => facts.valid_symbol_count(set),
+        }
+    }
+
+    fn production(&self, production: parser_ir::ProductionId) -> Option<RuntimeProductionFacts> {
+        match self {
+            Self::Owned(facts) => facts.production(production),
+        }
+    }
+
+    fn production_step(
+        &self,
+        production: parser_ir::ProductionId,
+        index: usize,
+    ) -> Option<RuntimeProductionStepFacts> {
+        match self {
+            Self::Owned(facts) => facts.production_step(production, index),
+        }
+    }
+
+    fn production_metadata(
+        &self,
+        metadata: parser_ir::ProductionMetadataId,
+    ) -> Option<RuntimeProductionMetadataFacts> {
+        match self {
+            Self::Owned(facts) => facts.production_metadata(metadata),
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct RuntimeWeavyInput<'a> {
@@ -6963,8 +7038,34 @@ struct RuntimeWeavyInput<'a> {
     auto_close_index: &'a RuntimeWeavyAutoCloseIndex,
     parser: &'a parser_ir::ParserGrammar,
     table: &'a parser_ir::ParseTable,
+    facts: RuntimeParserFactsProvider<'a>,
     input: &'a str,
     external_scanner: Option<&'a dyn ExternalScannerHost>,
+}
+
+impl<'a> RuntimeWeavyInput<'a> {
+    fn owned(
+        plan: &'a WeavyParsePlan,
+        parser: &'a parser_ir::ParserGrammar,
+        table: &'a parser_ir::ParseTable,
+        input: &'a str,
+        external_scanner: Option<&'a dyn ExternalScannerHost>,
+    ) -> Self {
+        Self {
+            plan,
+            lexer_program: &plan.lexer_program,
+            auto_close_index: &plan.auto_close_index,
+            parser,
+            table,
+            facts: RuntimeParserFactsProvider::Owned(OwnedRuntimeParserFacts {
+                parser,
+                table,
+                program: &plan.program,
+            }),
+            input,
+            external_scanner,
+        }
+    }
 }
 
 struct RuntimeWeavyOutput<'a> {
@@ -7708,15 +7809,7 @@ pub fn parse_prepared_weavy_with_report_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<WeavyParseReport, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     if let Some(report) = parse_weavy_deterministic_report_with_lexer_program(input_ctx)? {
         return Ok(report);
     }
@@ -7751,15 +7844,7 @@ pub fn parse_prepared_weavy_tree_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<SexpNode, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     if let Some(tree) = parse_weavy_deterministic_tree_with_lexer_program(input_ctx)? {
         return Ok(tree);
     }
@@ -7805,15 +7890,7 @@ pub fn parse_prepared_weavy_resolved_tree_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<parser_ir::ResolvedCstNode, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     if let Some(tree) = parse_weavy_deterministic_resolved_tree_with_lexer_program(input_ctx)? {
         return Ok(tree);
     }
@@ -7839,15 +7916,7 @@ pub fn parse_prepared_weavy_resolved_cst_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<parser_ir::ResolvedCstTree, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     if let Some(tree) = parse_weavy_deterministic_resolved_cst_with_lexer_program(input_ctx)? {
         return Ok(tree);
     }
@@ -7887,15 +7956,7 @@ pub fn parse_prepared_weavy_resolved_cst_report_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<WeavyResolvedCstReport, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     if let Some(report) =
         parse_weavy_deterministic_resolved_cst_report_with_lexer_program(input_ctx)?
     {
@@ -7947,15 +8008,7 @@ pub fn lex_one_with_scanner(
     state: parser_ir::ParseStateId,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<WeavyLexToken, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     runtime_weavy_lex_one(input_ctx, byte_position, state).map(WeavyLexToken::from_runtime)
 }
 
@@ -7980,15 +8033,7 @@ pub fn parse_prepared_weavy_metered_with_report_and_scanner(
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<WeavyParseReport, WeavyParseError> {
     parse_weavy_with_lexer_program(
-        RuntimeWeavyInput {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            input,
-            external_scanner,
-        },
+        RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner),
         RuntimeWeavyRecoveryMode::Strict,
         None,
         RuntimeWeavyReuseCollection::Disabled,
@@ -8028,15 +8073,7 @@ pub fn parse_prepared_weavy_hostcalls_with_report_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<WeavyParseReport, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     parse_weavy_with_lexer_program(
         input_ctx,
         RuntimeWeavyRecoveryMode::Strict,
@@ -8079,15 +8116,7 @@ pub fn parse_prepared_weavy_hostcalls_tree_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<SexpNode, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     if let Some(tree) = parse_weavy_deterministic_tree_with_execution(
         input_ctx,
         RuntimeWeavyBlockExecution::HostCalls,
@@ -8137,15 +8166,7 @@ pub fn parse_prepared_weavy_hostcalls_resolved_tree_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<parser_ir::ResolvedCstNode, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     if let Some(tree) = parse_weavy_deterministic_resolved_tree_with_execution(
         input_ctx,
         RuntimeWeavyBlockExecution::HostCalls,
@@ -8281,15 +8302,7 @@ pub fn parse_prepared_weavy_collecting_reuse_with_report_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<WeavyParseReport, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     if let Some(report) =
         parse_weavy_deterministic_collecting_reuse_report_with_lexer_program(input_ctx)?
     {
@@ -8312,15 +8325,7 @@ pub fn parse_prepared_weavy_recovering_with_report_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<WeavyParseReport, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     if let Some(report) = parse_weavy_deterministic_report_with_lexer_program(input_ctx)? {
         return Ok(report);
     }
@@ -8341,15 +8346,7 @@ pub fn parse_prepared_weavy_recovering_collecting_reuse_with_report_and_scanner(
     input: &str,
     external_scanner: Option<&dyn ExternalScannerHost>,
 ) -> Result<WeavyParseReport, WeavyParseError> {
-    let input_ctx = RuntimeWeavyInput {
-        plan,
-        lexer_program: &plan.lexer_program,
-        auto_close_index: &plan.auto_close_index,
-        parser,
-        table,
-        input,
-        external_scanner,
-    };
+    let input_ctx = RuntimeWeavyInput::owned(plan, parser, table, input, external_scanner);
     if let Some(report) =
         parse_weavy_deterministic_collecting_reuse_report_with_lexer_program(input_ctx)?
     {
@@ -8640,15 +8637,7 @@ pub fn reparse_prepared_weavy_with_report_and_scanner(
     validate_weavy_edit(edit, old_input, new_input)?;
     let reuse_index = RuntimeWeavyReuseIndex::from_report(previous_report, edit);
     parse_weavy_with_lexer_program(
-        RuntimeWeavyInput {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            input: new_input,
-            external_scanner,
-        },
+        RuntimeWeavyInput::owned(plan, parser, table, new_input, external_scanner),
         RuntimeWeavyRecoveryMode::Strict,
         Some(&reuse_index),
         RuntimeWeavyReuseCollection::Enabled,
@@ -8672,15 +8661,7 @@ pub fn reparse_prepared_weavy_recovering_with_report_and_scanner(
     validate_weavy_edit(edit, old_input, new_input)?;
     let reuse_index = RuntimeWeavyReuseIndex::from_report(previous_report, edit);
     parse_weavy_with_lexer_program(
-        RuntimeWeavyInput {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            input: new_input,
-            external_scanner,
-        },
+        RuntimeWeavyInput::owned(plan, parser, table, new_input, external_scanner),
         RuntimeWeavyRecoveryMode::SkipInvalidInput,
         Some(&reuse_index),
         RuntimeWeavyReuseCollection::Enabled,
@@ -9390,15 +9371,7 @@ pub fn parse_prepared_weavy_glr_diagnostics(
     let lexer_scratch = RuntimeWeavyLexerScratch::new(RuntimeWeavyLexSetCachePolicy::Disabled);
     let mut diagnostics = RuntimeWeavyGlrDiagnosticsCollector::default();
     let result = parse_weavy_with_lexer_program_and_scratch(
-        RuntimeWeavyInput {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            input,
-            external_scanner: None,
-        },
+        RuntimeWeavyInput::owned(plan, parser, table, input, None),
         RuntimeWeavyRecoveryMode::Strict,
         None,
         RuntimeWeavyReuseCollection::Disabled,
@@ -11474,9 +11447,7 @@ enum RuntimeWeavyStepError {
 
 struct RuntimeWeavyStepper<'a> {
     plan: &'a WeavyParserProgram,
-    parser: &'a parser_ir::ParserGrammar,
-    table: &'a parser_ir::ParseTable,
-    facts: OwnedRuntimeParserFacts<'a>,
+    facts: RuntimeParserFactsProvider<'a>,
     lexer_program: &'a WeavyLexerProgram,
     auto_close_index: &'a RuntimeWeavyAutoCloseIndex,
     input: &'a str,
@@ -11516,14 +11487,8 @@ impl<'a> RuntimeWeavyStepper<'a> {
     ) -> Self {
         Self {
             plan: &stepper_input.input.plan.program,
-            parser: stepper_input.input.parser,
-            table: stepper_input.input.table,
+            facts: stepper_input.input.facts,
             lexer_program: stepper_input.input.lexer_program,
-            facts: OwnedRuntimeParserFacts {
-                parser: stepper_input.input.parser,
-                table: stepper_input.input.table,
-                program: &stepper_input.input.plan.program,
-            },
             auto_close_index: stepper_input.input.auto_close_index,
             input: stepper_input.input.input,
             input_points: stepper_input.input_points,
@@ -11561,14 +11526,8 @@ impl<'a> RuntimeWeavyStepper<'a> {
     ) -> Self {
         Self {
             plan: &stepper_input.input.plan.program,
-            parser: stepper_input.input.parser,
-            table: stepper_input.input.table,
+            facts: stepper_input.input.facts,
             lexer_program: stepper_input.input.lexer_program,
-            facts: OwnedRuntimeParserFacts {
-                parser: stepper_input.input.parser,
-                table: stepper_input.input.table,
-                program: &stepper_input.input.plan.program,
-            },
             auto_close_index: stepper_input.input.auto_close_index,
             input: stepper_input.input.input,
             input_points: stepper_input.input_points,
@@ -12132,9 +12091,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
             None => byte_position == 0,
         };
         let word = mode.word();
-        let reserved_context = mode
-            .reserved_context()
-            .and_then(|context| self.facts.reserved_context(context));
+        let reserved_context = mode.reserved_context();
         let mut best_reserved = None::<RuntimeWeavyTokenCandidate>;
         let mut best = None::<RuntimeWeavyTokenCandidate>;
         let mut best_rejected = None::<RuntimeWeavyTokenCandidate>;
@@ -12185,9 +12142,11 @@ impl<'a> RuntimeWeavyStepper<'a> {
                         },
                         scanner: None,
                     };
-                    if reserved_context
-                        .is_some_and(|context| context.entries().contains(&terminal_row.terminal))
-                    {
+                    if reserved_context.is_some_and(|context| {
+                        self.facts
+                            .reserved_terminal(context, terminal_row.terminal)
+                            .unwrap_or(false)
+                    }) {
                         candidate.lookahead = parser_ir::LookaheadSymbol::ReservedWord {
                             terminal: terminal_row.terminal,
                             context: mode
@@ -12521,20 +12480,23 @@ impl<'a> RuntimeWeavyStepper<'a> {
             });
         };
         let external_row = self
-            .parser
-            .symbols()
-            .externals()
-            .get(external.get() as usize)
+            .facts
+            .external_symbol(external)
             .ok_or(RuntimeWeavyStepError::UnsupportedCanonicalOp)?;
-        let valid_symbols = mode
-            .valid_symbols()
-            .map(|set| &self.table.valid_symbol_sets()[set.get() as usize]);
+        let valid_symbols = mode.valid_symbols().map(|set| RuntimeValidSymbols {
+            facts: &self.facts,
+            set,
+            count: self.facts.valid_symbol_count(set).unwrap_or(0),
+        });
         scanner
             .scan(ExternalScanRequest::new(
                 state.id(),
                 external,
-                external_row,
-                valid_symbols,
+                external_row.ordinal,
+                None,
+                valid_symbols
+                    .as_ref()
+                    .map(|symbols| symbols as &dyn parser_ir::ExternalValidSymbols),
                 self.input,
                 byte_position,
                 self.scanner_snapshot,
@@ -17154,44 +17116,22 @@ mod tests {
 
         let metered =
             parse_prepared_weavy_metered_with_report(&plan, &parser, &table, "ab").unwrap();
-        let deterministic_direct =
-            parse_weavy_deterministic_report_with_lexer_program(RuntimeWeavyInput {
-                plan: &plan,
-                lexer_program: &plan.lexer_program,
-                auto_close_index: &plan.auto_close_index,
-                parser: &parser,
-                table: &table,
-                input: "ab",
-                external_scanner: None,
-            })
-            .unwrap()
-            .expect("tiny grammar is deterministic");
-        let deterministic_tree_only =
-            parse_weavy_deterministic_tree_with_lexer_program(RuntimeWeavyInput {
-                plan: &plan,
-                lexer_program: &plan.lexer_program,
-                auto_close_index: &plan.auto_close_index,
-                parser: &parser,
-                table: &table,
-                input: "ab",
-                external_scanner: None,
-            })
-            .unwrap()
-            .expect("tiny grammar is deterministic");
+        let deterministic_direct = parse_weavy_deterministic_report_with_lexer_program(
+            RuntimeWeavyInput::owned(&plan, &parser, &table, "ab", None),
+        )
+        .unwrap()
+        .expect("tiny grammar is deterministic");
+        let deterministic_tree_only = parse_weavy_deterministic_tree_with_lexer_program(
+            RuntimeWeavyInput::owned(&plan, &parser, &table, "ab", None),
+        )
+        .unwrap()
+        .expect("tiny grammar is deterministic");
         let tree_only_scratch =
             RuntimeWeavyLexerScratch::new(RuntimeWeavyLexSetCachePolicy::Disabled);
         let scratch_tree_only = parse_weavy_deterministic_with_execution_and_scratch::<
             RuntimeWeavyDeterministicTreeSink,
         >(
-            RuntimeWeavyInput {
-                plan: &plan,
-                lexer_program: &plan.lexer_program,
-                auto_close_index: &plan.auto_close_index,
-                parser: &parser,
-                table: &table,
-                input: "ab",
-                external_scanner: None,
-            },
+            RuntimeWeavyInput::owned(&plan, &parser, &table, "ab", None),
             RuntimeWeavyBlockExecution::Direct,
             &tree_only_scratch,
         )
@@ -17201,18 +17141,11 @@ mod tests {
             tree_only_scratch.execution_stats(),
             WeavyLexerExecutionStats::default()
         );
-        let deterministic_resolved =
-            parse_weavy_deterministic_resolved_tree_with_lexer_program(RuntimeWeavyInput {
-                plan: &plan,
-                lexer_program: &plan.lexer_program,
-                auto_close_index: &plan.auto_close_index,
-                parser: &parser,
-                table: &table,
-                input: "ab",
-                external_scanner: None,
-            })
-            .unwrap()
-            .expect("tiny grammar is deterministic");
+        let deterministic_resolved = parse_weavy_deterministic_resolved_tree_with_lexer_program(
+            RuntimeWeavyInput::owned(&plan, &parser, &table, "ab", None),
+        )
+        .unwrap()
+        .expect("tiny grammar is deterministic");
         let default_direct =
             parse_prepared_weavy_with_report(&plan, &parser, &table, "ab").unwrap();
         let tree_only = parse_prepared_weavy_tree(&plan, &parser, &table, "ab").unwrap();
@@ -17230,15 +17163,7 @@ mod tests {
             )
         ))]
         let deterministic_hostcalls = parse_weavy_deterministic_report_with_execution(
-            RuntimeWeavyInput {
-                plan: &plan,
-                lexer_program: &plan.lexer_program,
-                auto_close_index: &plan.auto_close_index,
-                parser: &parser,
-                table: &table,
-                input: "ab",
-                external_scanner: None,
-            },
+            RuntimeWeavyInput::owned(&plan, &parser, &table, "ab", None),
             RuntimeWeavyBlockExecution::HostCalls,
         )
         .unwrap()
@@ -17524,15 +17449,9 @@ mod tests {
         let plan = WeavyParsePlan::new(&validated, &parser, &table).unwrap();
 
         assert!(
-            parse_weavy_deterministic_report_with_lexer_program(RuntimeWeavyInput {
-                plan: &plan,
-                lexer_program: &plan.lexer_program,
-                auto_close_index: &plan.auto_close_index,
-                parser: &parser,
-                table: &table,
-                input: "x",
-                external_scanner: None,
-            })
+            parse_weavy_deterministic_report_with_lexer_program(RuntimeWeavyInput::owned(
+                &plan, &parser, &table, "x", None,
+            ))
             .unwrap()
             .is_none()
         );
