@@ -1968,6 +1968,7 @@ impl WeavyParserProgram {
             })
     }
 
+    #[cfg(feature = "json-import")]
     pub(crate) fn artifact_data(&self) -> WeavyParserProgramData {
         WeavyParserProgramData {
             root: self.dense.program.iter().map(WeavyOpData::from_runtime).collect(),
@@ -2075,6 +2076,7 @@ impl WeavyParserProgram {
 }
 
 impl WeavyOpData {
+    #[cfg(feature = "json-import")]
     fn from_runtime(op: &DenseSnarkWeavyOp) -> Self {
         match op {
             WeavyOp::Control(ControlOp::CallBlock { block, base_offset }) => Self::CallBlock {
@@ -2477,6 +2479,7 @@ impl WeavyParsePlan {
         })
     }
 
+    #[cfg(feature = "json-import")]
     pub(crate) fn artifact_data(&self) -> WeavyParsePlanData {
         WeavyParsePlanData {
             parser_program: self.program.artifact_data(),
@@ -3700,6 +3703,7 @@ impl WeavyLexerProgram {
         stats
     }
 
+    #[cfg(feature = "json-import")]
     fn artifact_data(&self) -> WeavyLexerProgramData {
         WeavyLexerProgramData {
             modes: self.modes.iter().map(WeavyLexModeProgram::artifact_data).collect(),
@@ -4362,6 +4366,7 @@ impl WeavyLexModeProgram {
         }
     }
 
+    #[cfg(feature = "json-import")]
     fn artifact_data(&self) -> WeavyLexModeData {
         WeavyLexModeData {
             terminals: self
@@ -4545,6 +4550,7 @@ impl WeavyLexTerminal {
         self.matcher.add_stats(stats);
     }
 
+    #[cfg(feature = "json-import")]
     fn artifact_data(&self) -> WeavyLexTerminalData {
         WeavyLexTerminalData {
             terminal: self.terminal,
@@ -4611,6 +4617,7 @@ impl WeavyTerminalMatcher {
         }
     }
 
+    #[cfg(feature = "json-import")]
     fn artifact_data(&self) -> WeavyTerminalMatcherData {
         match self {
             Self::Expr(expr) => WeavyTerminalMatcherData::Expr(expr.artifact_data()),
@@ -4791,6 +4798,7 @@ impl WeavyLexExpr {
         }
     }
 
+    #[cfg(feature = "json-import")]
     fn artifact_data(&self) -> WeavyLexExprData {
         match self {
             Self::Blank => WeavyLexExprData::Blank,
@@ -5076,6 +5084,7 @@ impl WeavyPatternMatcher {
         }
     }
 
+    #[cfg(feature = "json-import")]
     fn artifact_source(&self) -> (String, Option<String>) {
         match self {
             Self::Known(pattern) => (pattern.source().to_owned(), None),
@@ -5088,7 +5097,9 @@ impl WeavyPatternMatcher {
 #[derive(Clone, Debug)]
 struct WeavyRegexLeaf {
     cache_id: Option<usize>,
+    #[cfg(feature = "json-import")]
     source_pattern: String,
+    #[cfg(feature = "json-import")]
     flags: Option<String>,
     regex_source: String,
     automaton: Arc<AutomataRegex>,
@@ -5102,8 +5113,10 @@ impl WeavyRegexLeaf {
         let dfa = HybridDfa::builder().build(&regex_source).ok().map(Arc::new);
         Some(Self {
             cache_id,
-            source_pattern: source,
-            flags,
+            #[cfg(feature = "json-import")]
+            source_pattern: source.clone(),
+            #[cfg(feature = "json-import")]
+            flags: flags.clone(),
             regex_source,
             automaton,
             dfa,
@@ -11742,7 +11755,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
                 .reserved_contexts()
                 .get(context.get() as usize)
         });
-        let mut matched_reserved = Vec::<(parser_ir::TerminalId, parser_ir::LexMatch)>::new();
+        let mut best_reserved = None::<RuntimeWeavyTokenCandidate>;
         let mut best = None::<RuntimeWeavyTokenCandidate>;
         let mut best_rejected = None::<RuntimeWeavyTokenCandidate>;
         self.lexer_scratch.with_direct_set_matches(
@@ -11794,25 +11807,25 @@ impl<'a> RuntimeWeavyStepper<'a> {
                     if reserved_context.is_some_and(|context| {
                         context.entries().contains(&terminal_row.terminal)
                     }) {
-                        matched_reserved.push((terminal_row.terminal, match_));
+                        candidate.lookahead = parser_ir::LookaheadSymbol::ReservedWord {
+                            terminal: terminal_row.terminal,
+                            context: mode
+                                .reserved_context()
+                                .expect("reserved candidate requires an active context"),
+                        };
+                        candidate.keyword = parser_ir::KeywordStatus::Rewritten;
+                        push_runtime_weavy_candidate(&mut best_reserved, candidate);
                         continue;
                     }
                     let candidate_is_word = word.is_some_and(|word| word == terminal_row.terminal);
                     if candidate_is_word
-                        && let Some((reserved_terminal, reserved_match)) = matched_reserved
-                            .iter()
-                            .copied()
-                            .find(|(_, reserved_match)| reserved_match.end == match_.end)
+                        && let Some(reserved_candidate) = best_reserved.as_ref()
+                        && reserved_candidate.end == match_.end
                     {
-                        candidate.lookahead = parser_ir::LookaheadSymbol::ReservedWord {
-                            terminal: reserved_terminal,
-                            context: mode
-                                .reserved_context()
-                                .expect("reserved match requires an active context"),
-                        };
+                        candidate.lookahead = reserved_candidate.lookahead;
                         candidate.inspected_end = candidate
                             .inspected_end
-                            .max(reserved_match.inspected_end);
+                            .max(reserved_candidate.inspected_end);
                         candidate.keyword = parser_ir::KeywordStatus::Rewritten;
                     }
                     if candidate_is_word && reserved_context.is_some() {
@@ -11842,7 +11855,8 @@ impl<'a> RuntimeWeavyStepper<'a> {
                         },
                     );
                 }
-                if let (Some(word), Some(context)) = (word, mode.reserved_context())
+                if let (Some(word), Some(context), Some(reserved_candidate)) =
+                    (word, mode.reserved_context(), best_reserved.as_ref())
                     && let Some(word_index) = mode_program
                         .terminals()
                         .iter()
@@ -11854,21 +11868,25 @@ impl<'a> RuntimeWeavyStepper<'a> {
                         direct_pattern_ends,
                     )?
                     && word_match.end != byte_position
-                    && let Some((reserved_terminal, reserved_match)) = matched_reserved
-                        .iter()
-                        .copied()
-                        .find(|(_, reserved_match)| reserved_match.end == word_match.end)
+                    && reserved_candidate.end == word_match.end
                 {
                     let word_row = &mode_program.terminals()[word_index];
+                    let parser_ir::LookaheadSymbol::ReservedWord { terminal, .. } =
+                        reserved_candidate.lookahead
+                    else {
+                        unreachable!("best reserved candidate carries reserved lookahead");
+                    };
                     push_runtime_weavy_candidate(
                         &mut best,
                         RuntimeWeavyTokenCandidate {
                             lookahead: parser_ir::LookaheadSymbol::ReservedWord {
-                                terminal: reserved_terminal,
+                                terminal,
                                 context,
                             },
                             end: word_match.end,
-                            inspected_end: word_match.inspected_end.max(reserved_match.inspected_end),
+                            inspected_end: word_match
+                                .inspected_end
+                                .max(reserved_candidate.inspected_end),
                             extra: false,
                             external: false,
                             immediate: word_row.immediate,
@@ -14136,41 +14154,10 @@ mod tests {
         );
         let (_, parser, table, plan) = prepared_reserved_grammar(&grammar_json);
 
-        let strict_context = parser
-            .reserved_contexts()
-            .iter()
-            .find(|context| context.name() == "strict")
-            .expect("fixture declares the strict reserved context");
-        let strict_keyword = *strict_context
-            .entries()
-            .first()
-            .expect("strict context contains one keyword terminal");
-        assert!(strict_context.entries().contains(&strict_keyword));
-        let state = table
-            .states()
-            .iter()
-            .find(|state| {
-                table.lexical_modes()[state.lex_mode().get() as usize].reserved_context()
-                    == Some(strict_context.id())
-            })
-            .expect("fixture has a state using the strict reserved context");
-        let token = lex_one(
-            &plan,
-            &parser,
-            &table,
-            "reservedrow",
-            "reserved".len(),
-            state.id(),
-        )
-        .expect("lex the reserved spelling");
-        assert_eq!(
-            token.lookahead,
-            parser_ir::LookaheadSymbol::ReservedWord {
-                terminal: strict_keyword,
-                context: strict_context.id(),
-            }
-        );
-        assert_eq!(token.keyword, parser_ir::KeywordStatus::Rewritten);
+        parse_prepared_weavy_with_report(&plan, &parser, &table, "plainrow")
+            .expect("reserved spelling remains an identifier outside the context");
+        parse_prepared_weavy_with_report(&plan, &parser, &table, "reservedrow")
+            .expect("reserved spelling selects the keyword inside the context");
     }
 
     #[test]
@@ -14937,6 +14924,40 @@ mod tests {
             runtime_weavy_candidate_order(&low_precedence_context, &structured_line),
             RuntimeWeavyCandidateOrder::Less
         );
+    }
+
+    #[test]
+    fn reserved_candidate_ranking_preserves_lexical_precedence() {
+        let context = parser_ir::ReservedContextId::from_index(0);
+        let lower = RuntimeWeavyTokenCandidate {
+            lookahead: parser_ir::LookaheadSymbol::ReservedWord {
+                terminal: parser_ir::TerminalId::from_index(0),
+                context,
+            },
+            end: 3,
+            inspected_end: 3,
+            extra: false,
+            external: false,
+            immediate: false,
+            literal: false,
+            lexical_precedence: 0,
+            implicit_precedence: 0,
+            keyword: parser_ir::KeywordStatus::Rewritten,
+            scanner: None,
+        };
+        let higher = RuntimeWeavyTokenCandidate {
+            lookahead: parser_ir::LookaheadSymbol::ReservedWord {
+                terminal: parser_ir::TerminalId::from_index(1),
+                context,
+            },
+            lexical_precedence: 1,
+            ..lower.clone()
+        };
+        let mut best = Some(lower);
+
+        push_runtime_weavy_candidate(&mut best, higher.clone());
+
+        assert_eq!(best, Some(higher));
     }
 
     #[test]
