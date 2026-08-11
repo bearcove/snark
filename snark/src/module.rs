@@ -12,8 +12,9 @@ use phon_storage::{AlignedRegistry, DenseRangeWriter};
 use weavy::DenseLowered;
 use weavy::ir::WeavyOp;
 use weavy::module::{
-    Constant, ConstantId, ConstantPool, ConstantRange, ConstantReference, DialectRequirement,
-    IntrinsicContract, ModuleManifest, ModuleVerifier, StorageProfile, WeavyModule,
+    Constant, ConstantId, ConstantPool, ConstantRange, ConstantRangeId, ConstantRangeReference,
+    ConstantReference, DialectRequirement, IntrinsicContract, ModuleManifest, ModuleVerifier,
+    StorageProfile, WeavyModule,
 };
 use weavy_phon::{
     CodecError, ConstantRangeReport, InspectionReport, IntrinsicCodec, SectionReport,
@@ -222,6 +223,30 @@ impl RuntimeRanges {
         })
     }
 
+    fn references(&self) -> Vec<ConstantRangeReference> {
+        self.into_ranges_ref()
+            .iter()
+            .enumerate()
+            .map(|(index, range)| {
+                ConstantRangeReference::new(
+                    ConstantRangeId::new(index as u32),
+                    range.schema_id(),
+                    range.profile(),
+                )
+            })
+            .collect()
+    }
+
+    fn into_ranges_ref(&self) -> [&ConstantRange; 5] {
+        [
+            &self.header,
+            &self.states,
+            &self.productions,
+            &self.production_steps,
+            &self.production_metadata,
+        ]
+    }
+
     fn into_ranges(self) -> Vec<ConstantRange> {
         vec![
             self.header,
@@ -428,21 +453,13 @@ impl SnarkModule {
                 [0],
             ),
             DenseLowered::new(
-                vec![
-                    WeavyOp::Intrinsic(SnarkModuleIntrinsic::GrammarFingerprint(ConstantId::new(
-                        0,
-                    ))),
-                    WeavyOp::Intrinsic(SnarkModuleIntrinsic::ParserGrammar(ConstantId::new(1))),
-                    WeavyOp::Intrinsic(SnarkModuleIntrinsic::ParseTable(ConstantId::new(2))),
-                    WeavyOp::Intrinsic(SnarkModuleIntrinsic::ParsePlan(ConstantId::new(3))),
-                ],
+                vec![WeavyOp::Intrinsic(SnarkModuleIntrinsic::RuntimeRanges(
+                    ranges.references(),
+                ))],
                 Vec::new(),
             ),
             ConstantPool::new(vec![
-                Constant::new(
-                    GRAMMAR_FINGERPRINT_SCHEMA,
-                    data.grammar_fingerprint.to_vec(),
-                ),
+                Constant::new(GRAMMAR_FINGERPRINT_SCHEMA, data.grammar_fingerprint.to_vec()),
                 Constant::new(PARSER_GRAMMAR_SCHEMA, grammar),
                 Constant::new(PARSE_TABLE_SCHEMA, table),
                 Constant::new(PARSE_PLAN_SCHEMA, plan),
@@ -609,21 +626,16 @@ impl From<InspectionReport> for SnarkModuleInspection {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SnarkModuleIntrinsic {
-    GrammarFingerprint(ConstantId),
-    ParserGrammar(ConstantId),
-    ParseTable(ConstantId),
-    ParsePlan(ConstantId),
+    RuntimeRanges(Vec<ConstantRangeReference>),
 }
 
 impl IntrinsicContract for SnarkModuleIntrinsic {
-    fn constant_references(&self, visit: &mut dyn FnMut(ConstantReference)) {
-        let (id, schema) = match self {
-            Self::GrammarFingerprint(id) => (*id, GRAMMAR_FINGERPRINT_SCHEMA),
-            Self::ParserGrammar(id) => (*id, PARSER_GRAMMAR_SCHEMA),
-            Self::ParseTable(id) => (*id, PARSE_TABLE_SCHEMA),
-            Self::ParsePlan(id) => (*id, PARSE_PLAN_SCHEMA),
-        };
-        visit(ConstantReference::new(id, schema));
+    fn constant_references(&self, _visit: &mut dyn FnMut(ConstantReference)) {}
+
+    fn constant_range_references(&self, visit: &mut dyn FnMut(ConstantRangeReference)) {
+        match self {
+            Self::RuntimeRanges(ranges) => ranges.iter().copied().for_each(visit),
+        }
     }
 }
 
@@ -635,28 +647,44 @@ impl IntrinsicCodec for SnarkCodec {
     const SCHEMA_ID: u64 = 0x99f3_525f_a240_6d1c;
 
     fn encode(intrinsic: &Self::Intrinsic, out: &mut Vec<u8>) {
-        let (tag, id) = match intrinsic {
-            SnarkModuleIntrinsic::GrammarFingerprint(id) => (0, *id),
-            SnarkModuleIntrinsic::ParserGrammar(id) => (1, *id),
-            SnarkModuleIntrinsic::ParseTable(id) => (2, *id),
-            SnarkModuleIntrinsic::ParsePlan(id) => (3, *id),
-        };
-        out.push(tag);
-        out.extend_from_slice(&id.index().to_le_bytes());
+        match intrinsic {
+            SnarkModuleIntrinsic::RuntimeRanges(ranges) => {
+                out.push(0);
+                out.extend_from_slice(&(ranges.len() as u32).to_le_bytes());
+                for range in ranges {
+                    out.extend_from_slice(&range.id().index().to_le_bytes());
+                    out.extend_from_slice(&range.expected_schema().as_u64().to_le_bytes());
+                    out.push(match range.expected_profile() {
+                        StorageProfile::Compact => 0,
+                        StorageProfile::Aligned => 1,
+                        StorageProfile::DenseAligned => 2,
+                    });
+                }
+            }
+        }
     }
 
     fn decode(bytes: &[u8]) -> Result<Self::Intrinsic, CodecError> {
-        if bytes.len() != 5 {
+        if bytes.len() < 5 || bytes[0] != 0 {
             return Err(CodecError::MalformedIntrinsic);
         }
-        let id = ConstantId::new(u32::from_le_bytes(bytes[1..].try_into().expect("length")));
-        match bytes[0] {
-            0 => Ok(SnarkModuleIntrinsic::GrammarFingerprint(id)),
-            1 => Ok(SnarkModuleIntrinsic::ParserGrammar(id)),
-            2 => Ok(SnarkModuleIntrinsic::ParseTable(id)),
-            3 => Ok(SnarkModuleIntrinsic::ParsePlan(id)),
-            _ => Err(CodecError::MalformedIntrinsic),
+        let count = u32::from_le_bytes(bytes[1..5].try_into().expect("length")) as usize;
+        if bytes.len() != 5 + count * 13 {
+            return Err(CodecError::MalformedIntrinsic);
         }
+        let mut ranges = Vec::with_capacity(count);
+        for chunk in bytes[5..].chunks_exact(13) {
+            let id = ConstantRangeId::new(u32::from_le_bytes(chunk[..4].try_into().expect("length")));
+            let schema = SchemaId::from_raw(u64::from_le_bytes(chunk[4..12].try_into().expect("length")));
+            let profile = match chunk[12] {
+                0 => StorageProfile::Compact,
+                1 => StorageProfile::Aligned,
+                2 => StorageProfile::DenseAligned,
+                _ => return Err(CodecError::MalformedIntrinsic),
+            };
+            ranges.push(ConstantRangeReference::new(id, schema, profile));
+        }
+        Ok(SnarkModuleIntrinsic::RuntimeRanges(ranges))
     }
 }
 
