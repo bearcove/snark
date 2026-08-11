@@ -459,7 +459,10 @@ impl SnarkModule {
                 Vec::new(),
             ),
             ConstantPool::new(vec![
-                Constant::new(GRAMMAR_FINGERPRINT_SCHEMA, data.grammar_fingerprint.to_vec()),
+                Constant::new(
+                    GRAMMAR_FINGERPRINT_SCHEMA,
+                    data.grammar_fingerprint.to_vec(),
+                ),
                 Constant::new(PARSER_GRAMMAR_SCHEMA, grammar),
                 Constant::new(PARSE_TABLE_SCHEMA, table),
                 Constant::new(PARSE_PLAN_SCHEMA, plan),
@@ -674,8 +677,10 @@ impl IntrinsicCodec for SnarkCodec {
         }
         let mut ranges = Vec::with_capacity(count);
         for chunk in bytes[5..].chunks_exact(13) {
-            let id = ConstantRangeId::new(u32::from_le_bytes(chunk[..4].try_into().expect("length")));
-            let schema = SchemaId::from_raw(u64::from_le_bytes(chunk[4..12].try_into().expect("length")));
+            let id =
+                ConstantRangeId::new(u32::from_le_bytes(chunk[..4].try_into().expect("length")));
+            let schema =
+                SchemaId::from_raw(u64::from_le_bytes(chunk[4..12].try_into().expect("length")));
             let profile = match chunk[12] {
                 0 => StorageProfile::Compact,
                 1 => StorageProfile::Aligned,
