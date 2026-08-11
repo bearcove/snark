@@ -4920,41 +4920,108 @@ impl ResolvedCstNode {
 
 /// Minimal recursive node view needed by typed AST/lowering materializers.
 pub trait ParseNode: Sized {
+    /// Borrowed or arena-backed child node type.
+    type Child<'a>: ParseNode + 'a
+    where
+        Self: 'a;
+
+    /// Iterator over ordered child items.
+    type Children<'a>: Iterator<Item = Self::Child<'a>> + 'a
+    where
+        Self: 'a;
+
     /// Node or terminal kind.
     fn kind(&self) -> &str;
 
+    /// Field name attached by the grammar, when known.
+    fn field(&self) -> Option<&str>;
+
     /// Whether this item is named in public traversal.
     fn named(&self) -> bool;
+
+    /// Whether this item came from an extra token/node.
+    fn extra(&self) -> bool;
 
     /// Source text for terminal leaves.
     fn text(&self) -> Option<&str>;
 
     /// Ordered child items.
-    fn children(&self) -> &[Self];
+    fn children(&self) -> Self::Children<'_>;
 
     /// Half-open source byte range `[start, end)`.
     fn byte_range(&self) -> (usize, usize);
 }
 
 impl ParseNode for ResolvedCstNode {
+    type Child<'a> = &'a ResolvedCstNode;
+    type Children<'a> = std::slice::Iter<'a, ResolvedCstNode>;
+
     fn kind(&self) -> &str {
         self.kind()
+    }
+
+    fn field(&self) -> Option<&str> {
+        self.field()
     }
 
     fn named(&self) -> bool {
         self.named()
     }
 
+    fn extra(&self) -> bool {
+        self.extra()
+    }
+
     fn text(&self) -> Option<&str> {
         self.text()
     }
 
-    fn children(&self) -> &[Self] {
-        self.children()
+    fn children(&self) -> Self::Children<'_> {
+        self.children().iter()
     }
 
     fn byte_range(&self) -> (usize, usize) {
         let bytes = self.bytes();
+        (bytes.start().get() as usize, bytes.end().get() as usize)
+    }
+}
+
+impl ParseNode for &ResolvedCstNode {
+    type Child<'a>
+        = &'a ResolvedCstNode
+    where
+        Self: 'a;
+    type Children<'a>
+        = std::slice::Iter<'a, ResolvedCstNode>
+    where
+        Self: 'a;
+
+    fn kind(&self) -> &str {
+        ResolvedCstNode::kind(self)
+    }
+
+    fn field(&self) -> Option<&str> {
+        ResolvedCstNode::field(self)
+    }
+
+    fn named(&self) -> bool {
+        ResolvedCstNode::named(self)
+    }
+
+    fn extra(&self) -> bool {
+        ResolvedCstNode::extra(self)
+    }
+
+    fn text(&self) -> Option<&str> {
+        ResolvedCstNode::text(self)
+    }
+
+    fn children(&self) -> Self::Children<'_> {
+        ResolvedCstNode::children(self).iter()
+    }
+
+    fn byte_range(&self) -> (usize, usize) {
+        let bytes = ResolvedCstNode::bytes(self);
         (bytes.start().get() as usize, bytes.end().get() as usize)
     }
 }
@@ -5123,15 +5190,77 @@ impl<'a> ResolvedCstTreeNode<'a> {
     }
 
     /// Child items in source order.
-    pub fn children(&self) -> impl ExactSizeIterator<Item = ResolvedCstTreeNode<'a>> + '_ {
-        self.item()
-            .children
-            .iter()
+    pub fn children(&self) -> ResolvedCstTreeChildren<'a> {
+        ResolvedCstTreeChildren {
+            tree: self.tree,
+            indices: self.item().children.iter(),
+        }
+    }
+}
+
+/// Iterator over borrowed children of an arena-backed CST node.
+pub struct ResolvedCstTreeChildren<'a> {
+    tree: &'a ResolvedCstTree,
+    indices: std::slice::Iter<'a, usize>,
+}
+
+impl<'a> Iterator for ResolvedCstTreeChildren<'a> {
+    type Item = ResolvedCstTreeNode<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.indices
+            .next()
             .copied()
             .map(|index| ResolvedCstTreeNode {
                 tree: self.tree,
                 index,
             })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.indices.size_hint()
+    }
+}
+
+impl ExactSizeIterator for ResolvedCstTreeChildren<'_> {}
+
+impl<'tree> ParseNode for ResolvedCstTreeNode<'tree> {
+    type Child<'a>
+        = ResolvedCstTreeNode<'a>
+    where
+        Self: 'a;
+    type Children<'a>
+        = ResolvedCstTreeChildren<'a>
+    where
+        Self: 'a;
+
+    fn kind(&self) -> &str {
+        self.kind()
+    }
+
+    fn field(&self) -> Option<&str> {
+        self.field()
+    }
+
+    fn named(&self) -> bool {
+        self.named()
+    }
+
+    fn extra(&self) -> bool {
+        self.extra()
+    }
+
+    fn text(&self) -> Option<&str> {
+        self.text()
+    }
+
+    fn children(&self) -> Self::Children<'_> {
+        self.children()
+    }
+
+    fn byte_range(&self) -> (usize, usize) {
+        let bytes = self.bytes();
+        (bytes.start().get() as usize, bytes.end().get() as usize)
     }
 }
 
@@ -6445,6 +6574,13 @@ mod tests {
         lexical::LexicalFacts,
         validated::ValidatedGrammar,
     };
+
+    #[test]
+    fn arena_nodes_implement_parse_node_without_owned_materialization() {
+        fn assert_parse_node<T: ParseNode>() {}
+
+        assert_parse_node::<ResolvedCstTreeNode<'_>>();
+    }
 
     fn normalize(input: &str) -> ParserGrammar {
         let raw = RawGrammarJson::from_tree_sitter_json_str(input).unwrap();

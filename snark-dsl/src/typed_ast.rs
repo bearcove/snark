@@ -11,10 +11,13 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::fs;
 use std::path::Path;
-use std::{error::Error, fs};
 
 use snark::grammar::{RawGrammarJson, RawRuleJson};
+
+mod error;
+pub use error::GenerateTypedAstError;
 
 /// Inputs and output names for the typed-AST generator.
 pub struct TypedAstConfig<'a> {
@@ -37,7 +40,7 @@ pub struct TypedAstConfig<'a> {
 }
 
 /// Emit the embedded grammar JSON and generated typed AST files.
-pub fn generate_typed_ast(config: &TypedAstConfig<'_>) -> Result<(), Box<dyn Error>> {
+pub fn generate_typed_ast(config: &TypedAstConfig<'_>) -> Result<(), GenerateTypedAstError> {
     println!("cargo:rerun-if-changed={}", config.grammar_js.display());
     println!("cargo:rerun-if-changed={}", config.annotations_js.display());
 
@@ -49,7 +52,7 @@ pub fn generate_typed_ast(config: &TypedAstConfig<'_>) -> Result<(), Box<dyn Err
     let raw = RawGrammarJson::from_tree_sitter_json_str(&grammar_json)?;
     let anns: Annotations = facet_json::from_str(&ann_json)?;
 
-    let generated = Model::build(&raw, &anns).generate(config);
+    let generated = Model::build(&raw, &anns)?.generate(config);
     fs::write(config.out_dir.join(config.ast_output), generated)?;
     Ok(())
 }
@@ -174,17 +177,26 @@ fn merge_alts(existing: &mut Vec<Alt>, incoming: Vec<Alt>) {
 
 /// Walk a rule body collecting its fields. Field contents are NOT walked: nested
 /// fields inside field content are out of scope for the current generated grammars.
-fn walk(rule: &RawRuleJson) -> Fields {
+fn walk(rule_name: &str, rule: &RawRuleJson) -> Result<Fields, GenerateTypedAstError> {
     match rule {
-        RawRuleJson::Field { name, content } => {
-            Fields(vec![(name.clone(), field_alts(content), Mult::One)])
+        RawRuleJson::Field { name, content } => Ok(Fields(vec![(
+            name.clone(),
+            field_alts(rule_name, content)?,
+            Mult::One,
+        )])),
+        RawRuleJson::Seq { members } => {
+            members.iter().try_fold(Fields::default(), |acc, member| {
+                Ok(acc.seq(walk(rule_name, member)?))
+            })
         }
-        RawRuleJson::Seq { members } => members
-            .iter()
-            .fold(Fields::default(), |acc, m| acc.seq(walk(m))),
-        RawRuleJson::Choice { members } => Fields::choice(members.iter().map(walk).collect()),
+        RawRuleJson::Choice { members } => Ok(Fields::choice(
+            members
+                .iter()
+                .map(|member| walk(rule_name, member))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
         RawRuleJson::Repeat { content } | RawRuleJson::Repeat1 { content } => {
-            walk(content).repeated()
+            Ok(walk(rule_name, content)?.repeated())
         }
         RawRuleJson::Prec { content, .. }
         | RawRuleJson::PrecLeft { content, .. }
@@ -193,25 +205,28 @@ fn walk(rule: &RawRuleJson) -> Fields {
         | RawRuleJson::Token { content, .. }
         | RawRuleJson::ImmediateToken { content, .. }
         | RawRuleJson::Alias { content, .. }
-        | RawRuleJson::Reserved { content, .. } => walk(content),
-        _ => Fields::default(),
+        | RawRuleJson::Reserved { content, .. } => walk(rule_name, content),
+        _ => Ok(Fields::default()),
     }
 }
 
 /// The alternatives a field's content can produce.
-fn field_alts(content: &RawRuleJson) -> Vec<Alt> {
+fn field_alts(rule_name: &str, content: &RawRuleJson) -> Result<Vec<Alt>, GenerateTypedAstError> {
     match unwrap_transparent(content) {
-        RawRuleJson::Symbol { name } => vec![Alt::Rule(name.clone())],
-        RawRuleJson::String { value } => vec![Alt::Token(value.clone())],
+        RawRuleJson::Symbol { name } => Ok(vec![Alt::Rule(name.clone())]),
+        RawRuleJson::String { value } => Ok(vec![Alt::Token(value.clone())]),
         RawRuleJson::Choice { members } => {
             let mut out = Vec::new();
-            for m in members {
-                merge_alts(&mut out, field_alts(m));
+            for member in members {
+                merge_alts(&mut out, field_alts(rule_name, member)?);
             }
-            out
+            Ok(out)
         }
-        RawRuleJson::Blank => Vec::new(),
-        other => panic!("unsupported field content in typed AST grammar: {other:?}"),
+        RawRuleJson::Blank => Ok(Vec::new()),
+        other => Err(GenerateTypedAstError::unsupported(
+            rule_name,
+            format!("unsupported field content: {other:?}"),
+        )),
     }
 }
 
@@ -256,18 +271,14 @@ impl Decode {
         }
     }
 
-    fn lower_fn(self) -> &'static str {
-        match self {
-            Decode::Text => "crate::support::node_text",
-            Decode::Str => "crate::support::decode_string",
-            Decode::Path => "crate::support::decode_path",
-            Decode::Bool => "crate::support::decode_bool",
-            Decode::Unit => "crate::support::span",
-        }
-    }
-
     fn lower(self, node: &str) -> String {
-        format!("{}({node})", self.lower_fn())
+        match self {
+            Decode::Text => format!("node_text({node})?"),
+            Decode::Str => format!("decode_string({node})?"),
+            Decode::Path => format!("decode_path({node})?"),
+            Decode::Bool => format!("decode_bool({node})?"),
+            Decode::Unit => format!("span({node})"),
+        }
     }
 }
 
@@ -336,7 +347,10 @@ struct Model<'a> {
 }
 
 impl<'a> Model<'a> {
-    fn build(raw: &'a RawGrammarJson, anns: &'a Annotations) -> Self {
+    fn build(
+        raw: &'a RawGrammarJson,
+        anns: &'a Annotations,
+    ) -> Result<Self, GenerateTypedAstError> {
         let mut model = Model {
             raw,
             anns,
@@ -356,18 +370,29 @@ impl<'a> Model<'a> {
             }
             let enum_name = anns
                 .get(kind)
-                .and_then(|a| a.enum_name.clone())
-                .unwrap_or_else(|| panic!("hidden rule `{kind}` needs an `enum` annotation"));
+                .and_then(|annotation| annotation.enum_name.clone())
+                .ok_or_else(|| {
+                    GenerateTypedAstError::unsupported(
+                        kind,
+                        "hidden rule needs an `enum` annotation",
+                    )
+                })?;
             let RawRuleJson::Choice { members } = unwrap_transparent(rule) else {
-                panic!("hidden enum rule `{kind}` must be a choice");
+                return Err(GenerateTypedAstError::unsupported(
+                    kind,
+                    "hidden enum rule must be a choice",
+                ));
             };
-            let member_kinds: Vec<String> = members
+            let member_kinds = members
                 .iter()
-                .map(|m| match unwrap_transparent(m) {
-                    RawRuleJson::Symbol { name } => name.clone(),
-                    other => panic!("hidden enum `{kind}` member must be a symbol: {other:?}"),
+                .map(|member| match unwrap_transparent(member) {
+                    RawRuleJson::Symbol { name } => Ok(name.clone()),
+                    other => Err(GenerateTypedAstError::unsupported(
+                        kind,
+                        format!("hidden enum member must be a symbol: {other:?}"),
+                    )),
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             if let Some(existing) = model.enums.iter_mut().find(|e| e.name == enum_name) {
                 existing.source_kinds.push(kind.to_string());
                 for member in member_kinds {
@@ -385,37 +410,48 @@ impl<'a> Model<'a> {
             }
         }
 
-        // Structs: every fielded visible rule, in grammar order.
-        let struct_kinds: Vec<(String, Fields)> = raw
-            .rules
-            .iter()
-            .filter(|(name, _)| !name.as_str().starts_with('_'))
-            .filter_map(|(name, rule)| {
-                let fields = walk(rule);
-                (!fields.0.is_empty()).then(|| (name.as_str().to_string(), fields))
-            })
-            .collect();
+        // Discover every fielded visible rule before resolving any field shape.
+        // Shape resolution can therefore recognize forward references as structs.
+        let mut struct_kinds = Vec::new();
+        for (name, rule) in raw.rules.iter() {
+            let kind = name.as_str();
+            if kind.starts_with('_') {
+                continue;
+            }
+            let fields = walk(kind, rule)?;
+            if !fields.0.is_empty() {
+                model.structs.push(StructDef {
+                    kind: kind.to_string(),
+                    name: model.struct_name(kind),
+                    fields: Vec::new(),
+                });
+                struct_kinds.push((kind.to_string(), fields));
+            }
+        }
         for (kind, fields) in struct_kinds {
-            let name = model.struct_name(&kind);
             let fields = fields
                 .0
                 .into_iter()
                 .map(|(fname, alts, mult)| {
-                    let shape = model.resolve_shape(&kind, &fname, alts);
-                    FieldDef {
+                    let shape = model.resolve_shape(&kind, &fname, alts)?;
+                    Ok(FieldDef {
                         rust_name: rust_field_name(&fname, mult),
                         grammar_name: fname,
                         shape,
                         mult,
                         boxed: false,
-                    }
+                    })
                 })
-                .collect();
-            model.structs.push(StructDef { kind, name, fields });
+                .collect::<Result<Vec<_>, GenerateTypedAstError>>()?;
+            model
+                .structs
+                .iter_mut()
+                .find(|definition| definition.kind == kind)
+                .expect("discovered struct remains registered")
+                .fields = fields;
         }
-
         model.mark_cycle_back_edges();
-        model
+        Ok(model)
     }
 
     fn ann(&self, kind: &str) -> Option<&NodeAnn> {
@@ -453,96 +489,113 @@ impl<'a> Model<'a> {
     }
 
     fn is_struct_kind(&self, kind: &str) -> bool {
-        self.raw
-            .rules
-            .get(kind)
-            .is_some_and(|rule| !walk(rule).0.is_empty())
+        self.structs
+            .iter()
+            .any(|definition| definition.kind == kind)
     }
 
     /// Decode for an unfielded (leaf) visible rule.
-    fn leaf_decode(&self, kind: &str) -> Decode {
-        match self.ann(kind).and_then(|a| a.decode.as_deref()) {
-            Some("text") => Decode::Text,
-            Some("string") => Decode::Str,
-            Some("path") => Decode::Path,
-            Some("bool") => Decode::Bool,
-            Some(other) => panic!("unknown decode `{other}` on `{kind}`"),
+    fn leaf_decode(&self, kind: &str) -> Result<Decode, GenerateTypedAstError> {
+        match self
+            .ann(kind)
+            .and_then(|annotation| annotation.decode.as_deref())
+        {
+            Some("text") => Ok(Decode::Text),
+            Some("string") => Ok(Decode::Str),
+            Some("path") => Ok(Decode::Path),
+            Some("bool") => Ok(Decode::Bool),
+            Some(other) => Err(GenerateTypedAstError::unsupported(
+                kind,
+                format!("unknown decode `{other}`"),
+            )),
             None => {
-                // A single fixed literal is a unit; anything else is raw text.
-                let rule = self
-                    .raw
-                    .rules
-                    .get(kind)
-                    .unwrap_or_else(|| panic!("unknown rule `{kind}`"));
-                match unwrap_transparent(rule) {
+                let rule = self.raw.rules.get(kind).ok_or_else(|| {
+                    GenerateTypedAstError::unsupported(kind, "referenced rule does not exist")
+                })?;
+                Ok(match unwrap_transparent(rule) {
                     RawRuleJson::String { .. } => Decode::Unit,
                     _ => Decode::Text,
-                }
+                })
             }
         }
     }
 
-    fn resolve_shape(&mut self, kind: &str, fname: &str, alts: Vec<Alt>) -> Shape {
+    fn resolve_shape(
+        &mut self,
+        kind: &str,
+        fname: &str,
+        alts: Vec<Alt>,
+    ) -> Result<Shape, GenerateTypedAstError> {
         let tokens: Vec<String> = alts
             .iter()
-            .filter_map(|a| match a {
-                Alt::Token(t) => Some(t.clone()),
+            .filter_map(|alt| match alt {
+                Alt::Token(token) => Some(token.clone()),
                 Alt::Rule(_) => None,
             })
             .collect();
         let rules: Vec<String> = alts
             .iter()
-            .filter_map(|a| match a {
-                Alt::Rule(r) => Some(r.clone()),
+            .filter_map(|alt| match alt {
+                Alt::Rule(rule) => Some(rule.clone()),
                 Alt::Token(_) => None,
             })
             .collect();
 
         if rules.is_empty() {
-            assert!(
-                !tokens.is_empty(),
-                "field `{fname}` on `{kind}` has no alternatives"
-            );
-            return Shape::TokenSet(tokens);
+            if tokens.is_empty() {
+                return Err(GenerateTypedAstError::unsupported(
+                    kind,
+                    format!("field `{fname}` has no alternatives"),
+                ));
+            }
+            return Ok(Shape::TokenSet(tokens));
         }
-        assert!(
-            tokens.is_empty(),
-            "field `{fname}` on `{kind}` mixes tokens and rules — unsupported"
-        );
+        if !tokens.is_empty() {
+            return Err(GenerateTypedAstError::unsupported(
+                kind,
+                format!("field `{fname}` mixes tokens and rules"),
+            ));
+        }
         if rules.len() == 1 {
-            let r = &rules[0];
-            return if let Some(e) = self.hidden_enum(r) {
-                Shape::Enum(e.name.clone())
-            } else if self.is_struct_kind(r) {
-                Shape::Struct(r.clone())
+            let rule = &rules[0];
+            return if let Some(definition) = self.hidden_enum(rule) {
+                Ok(Shape::Enum(definition.name.clone()))
+            } else if self.is_struct_kind(rule) {
+                Ok(Shape::Struct(rule.clone()))
             } else {
-                Shape::Leaf(self.leaf_decode(r))
+                Ok(Shape::Leaf(self.leaf_decode(rule)?))
             };
         }
 
-        // Mixed alternatives: an ad-hoc enum, named by annotation.
         let name = self
             .ann(kind)
-            .and_then(|a| a.fields.get(fname))
-            .and_then(|f| f.enum_name.clone())
-            .unwrap_or_else(|| {
-                panic!("field `{fname}` on `{kind}` mixes alternatives; needs an `enum` annotation")
-            });
-        if let Some(idx) = self.adhocs.iter().position(|a| a.name == name) {
-            return Shape::AdHoc(idx);
+            .and_then(|annotation| annotation.fields.get(fname))
+            .and_then(|field| field.enum_name.clone())
+            .ok_or_else(|| {
+                GenerateTypedAstError::unsupported(
+                    kind,
+                    format!("field `{fname}` mixes alternatives and needs an `enum` annotation"),
+                )
+            })?;
+        if let Some(idx) = self
+            .adhocs
+            .iter()
+            .position(|definition| definition.name == name)
+        {
+            return Ok(Shape::AdHoc(idx));
         }
         let alts = rules
             .iter()
-            .map(|r| {
-                if let Some(e) = self.hidden_enum(r) {
-                    AdHocAlt::Hidden(r.clone(), e.name.clone())
+            .map(|rule| {
+                if let Some(definition) = self.hidden_enum(rule) {
+                    AdHocAlt::Hidden(rule.clone(), definition.name.clone())
                 } else {
-                    AdHocAlt::Visible(r.clone())
+                    AdHocAlt::Visible(rule.clone())
                 }
             })
             .collect();
         self.adhocs.push(AdHocDef { name, alts });
-        Shape::AdHoc(self.adhocs.len() - 1)
+        Ok(Shape::AdHoc(self.adhocs.len() - 1))
     }
 
     fn mark_cycle_back_edges(&mut self) {
@@ -645,24 +698,189 @@ impl<'a> Model<'a> {
         )
         .unwrap();
         out.push_str(
-            "// Structure derived from grammar fields + cardinality; names/decodes from ast().\n\n\
-             use snark::parser::ResolvedCstNode;\n\n\
-             pub use crate::support::{Span, Spanned};\n\n\
-             fn token_field_nodes<'a>(n: &'a ResolvedCstNode, name: &str, set: &[&str]) -> Vec<&'a ResolvedCstNode> {\n    \
-             let fielded = n\n        \
-                 .children()\n        \
-                 .iter()\n        \
-                 .filter(|c| c.field() == Some(name) && !c.extra())\n        \
-                 .filter(|c| c.text().is_some_and(|t| set.contains(&t)))\n        \
-                 .collect::<Vec<_>>();\n    \
-             if !fielded.is_empty() {\n        \
-                 return fielded;\n    \
-             }\n    \
-             n.children()\n        \
-                 .iter()\n        \
-                 .filter(|c| !c.named() && !c.extra())\n        \
-                 .filter(|c| c.text().is_some_and(|t| set.contains(&t)))\n        \
-                 .collect()\n}\n\n",
+            r#"// Structure derived from grammar fields + cardinality; names/decodes from ast().
+
+use snark::parser::ParseNode;
+
+pub use crate::support::{Span, Spanned};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedAstLowerError {
+    UnexpectedKind { expected: &'static str, actual: String },
+    MissingField { node_kind: String, field: &'static str },
+    InvalidLeaf { node_kind: String, value: String, expected: &'static str },
+}
+
+fn token_field_nodes<'a, N: ParseNode>(n: &'a N, name: &str, set: &[&str]) -> Vec<N::Child<'a>> {
+    let fielded = n
+        .children()
+        .filter(|child| child.field() == Some(name) && !child.extra())
+        .filter(|child| child.text().is_some_and(|text| set.contains(&text)))
+        .collect::<Vec<_>>();
+    if !fielded.is_empty() {
+        return fielded;
+    }
+    n.children()
+        .filter(|child| !child.named() && !child.extra())
+        .filter(|child| child.text().is_some_and(|text| set.contains(&text)))
+        .collect()
+}
+
+fn field_opt<'a, N: ParseNode>(n: &'a N, name: &str) -> Option<N::Child<'a>> {
+    n.children().find(|child| child.field() == Some(name))
+}
+
+fn field_one<'a, N: ParseNode>(
+    n: &'a N,
+    name: &'static str,
+) -> Result<N::Child<'a>, TypedAstLowerError> {
+    field_opt(n, name).ok_or_else(|| TypedAstLowerError::MissingField {
+        node_kind: n.kind().to_owned(),
+        field: name,
+    })
+}
+
+fn fields<'a, N: ParseNode>(
+    n: &'a N,
+    name: &'static str,
+) -> impl Iterator<Item = N::Child<'a>> + 'a {
+    n.children().filter(move |child| child.field() == Some(name))
+}
+
+fn raw_text<N: ParseNode>(n: &N) -> String {
+    fn collect<N: ParseNode>(n: &N, out: &mut String) {
+        if let Some(text) = n.text() {
+            out.push_str(text);
+            return;
+        }
+        for child in n.children() {
+            if !child.extra() {
+                collect(&child, out);
+            }
+        }
+    }
+    let mut out = String::new();
+    collect(n, &mut out);
+    out
+}
+
+fn span<N: ParseNode>(n: &N) -> crate::support::Span {
+    let (start, end) = n.byte_range();
+    crate::support::Span {
+        start: start as u32,
+        end: end as u32,
+    }
+}
+
+fn node_text<N: ParseNode>(
+    n: &N,
+) -> Result<crate::support::Spanned<String>, TypedAstLowerError> {
+    let value = raw_text(n);
+    if value.is_empty() {
+        return Err(TypedAstLowerError::InvalidLeaf {
+            node_kind: n.kind().to_owned(),
+            value,
+            expected: "non-empty text",
+        });
+    }
+    Ok(crate::support::Spanned {
+        value,
+        span: span(n),
+    })
+}
+
+fn decode_quoted<N: ParseNode>(
+    n: &N,
+    raw: &str,
+    expected: &'static str,
+) -> Result<crate::support::Spanned<String>, TypedAstLowerError> {
+    let Some(quote) = raw.chars().next() else {
+        return Err(TypedAstLowerError::InvalidLeaf {
+            node_kind: n.kind().to_owned(),
+            value: raw.to_owned(),
+            expected,
+        });
+    };
+    let Some(inner) = raw
+        .strip_prefix(quote)
+        .and_then(|value| value.strip_suffix(quote))
+    else {
+        return Err(TypedAstLowerError::InvalidLeaf {
+            node_kind: n.kind().to_owned(),
+            value: raw.to_owned(),
+            expected,
+        });
+    };
+    let mut value = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let Some(escaped) = chars.next() else {
+                return Err(TypedAstLowerError::InvalidLeaf {
+                    node_kind: n.kind().to_owned(),
+                    value: raw.to_owned(),
+                    expected: "valid string escape",
+                });
+            };
+            value.push(match escaped {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                other => other,
+            });
+        } else {
+            value.push(ch);
+        }
+    }
+    Ok(crate::support::Spanned {
+        value,
+        span: span(n),
+    })
+}
+
+fn decode_string<N: ParseNode>(
+    n: &N,
+) -> Result<crate::support::Spanned<String>, TypedAstLowerError> {
+    let raw = raw_text(n);
+    decode_quoted(n, &raw, "quoted string")
+}
+
+fn decode_path<N: ParseNode>(
+    n: &N,
+) -> Result<crate::support::Spanned<String>, TypedAstLowerError> {
+    let raw = raw_text(n);
+    let Some(path) = raw.strip_prefix('p') else {
+        return Err(TypedAstLowerError::InvalidLeaf {
+            node_kind: n.kind().to_owned(),
+            value: raw,
+            expected: "p-prefixed quoted path",
+        });
+    };
+    decode_quoted(n, path, "p-prefixed quoted path")
+}
+
+fn decode_bool<N: ParseNode>(
+    n: &N,
+) -> Result<crate::support::Spanned<bool>, TypedAstLowerError> {
+    let value = raw_text(n);
+    let decoded = match value.as_str() {
+        "true" => true,
+        "false" => false,
+        _ => {
+            return Err(TypedAstLowerError::InvalidLeaf {
+                node_kind: n.kind().to_owned(),
+                value,
+                expected: "`true` or `false`",
+            });
+        }
+    };
+    Ok(crate::support::Spanned {
+        value: decoded,
+        span: span(n),
+    })
+}
+
+"#,
         );
         // Several hidden rules may share one enum (e.g. `_scrutinee` is a
         // syntactic restriction of `_expr`): emit each NAME once, first
@@ -683,12 +901,11 @@ impl<'a> Model<'a> {
         }
         out
     }
-
     fn variant_payload(&self, kind: &str) -> String {
         if self.is_struct_kind(kind) {
             format!("(Box<{}>)", self.struct_name(kind))
         } else {
-            format!("({})", self.leaf_decode(kind).rust_type())
+            format!("({})", self.leaf_decode(kind).unwrap().rust_type())
         }
     }
 
@@ -696,11 +913,11 @@ impl<'a> Model<'a> {
     fn variant_lower(&self, enum_name: &str, kind: &str, c: &str) -> String {
         let variant = self.variant_name(kind);
         if self.is_struct_kind(kind) {
-            format!("{enum_name}::{variant}(Box::new(lower_{kind}({c})))")
+            format!("{enum_name}::{variant}(Box::new(try_lower_{kind}({c})?))")
         } else {
             format!(
                 "{enum_name}::{variant}({})",
-                self.leaf_decode(kind).lower(c)
+                self.leaf_decode(kind).unwrap().lower(c)
             )
         }
     }
@@ -729,7 +946,7 @@ impl<'a> Model<'a> {
         if self.is_struct_kind(kind) {
             format!("{enum_name}::{variant}(x) => x.strip_spans(),")
         } else {
-            match self.leaf_decode(kind) {
+            match self.leaf_decode(kind).unwrap() {
                 Decode::Unit => format!(
                     "{enum_name}::{variant}(x) => *x = crate::support::Span {{ start: 0, end: 0 }},"
                 ),
@@ -748,11 +965,10 @@ impl<'a> Model<'a> {
         )
         .unwrap();
         for kind in &e.member_kinds {
-            // A hidden member (e.g. `_expr` inside `_arg`) nests its enum.
             if let Some(inner) = self.hidden_enum(kind) {
                 let variant = self
                     .ann(kind)
-                    .and_then(|a| a.as_variant.clone())
+                    .and_then(|annotation| annotation.as_variant.clone())
                     .unwrap_or_else(|| inner.name.clone());
                 writeln!(out, "    {variant}({}),", inner.name).unwrap();
             } else {
@@ -769,18 +985,16 @@ impl<'a> Model<'a> {
 
         writeln!(
             out,
-            "pub fn lower_{}(n: &ResolvedCstNode) -> {} {{\n    match n.kind() {{",
+            "pub fn try_lower_{}<N: ParseNode>(n: &N) -> Result<{}, TypedAstLowerError> {{\n    match n.kind() {{",
             snake(&e.name),
             e.name
         )
         .unwrap();
-        // Visible members dispatch on their exact kind; hidden members guard on
-        // their enum's kind set, so put them last.
         for kind in &e.member_kinds {
             if self.hidden_enum(kind).is_none() {
                 writeln!(
                     out,
-                    "        {kind:?} => {},",
+                    "        {kind:?} => Ok({}),",
                     self.variant_lower(&e.name, kind, "n")
                 )
                 .unwrap();
@@ -790,17 +1004,17 @@ impl<'a> Model<'a> {
             if let Some(inner) = self.hidden_enum(kind) {
                 let variant = self
                     .ann(kind)
-                    .and_then(|a| a.as_variant.clone())
+                    .and_then(|annotation| annotation.as_variant.clone())
                     .unwrap_or_else(|| inner.name.clone());
                 let kinds = self
                     .dispatch_kinds(inner)
                     .iter()
-                    .map(|k| format!("{k:?}"))
+                    .map(|kind| format!("{kind:?}"))
                     .collect::<Vec<_>>()
                     .join(" | ");
                 writeln!(
                     out,
-                    "        {kinds} => {}::{variant}(lower_{}(n)),",
+                    "        {kinds} => Ok({}::{variant}(try_lower_{}(n)?)),",
                     e.name,
                     snake(&inner.name)
                 )
@@ -809,13 +1023,11 @@ impl<'a> Model<'a> {
         }
         writeln!(
             out,
-            "        other => panic!(\"unexpected `{}` node kind `{{other}}`\"),\n    }}\n}}\n",
+            "        other => Err(TypedAstLowerError::UnexpectedKind {{ expected: {:?}, actual: other.to_owned() }}),\n    }}\n}}\n",
             e.kind
         )
         .unwrap();
 
-        // Canonicalization: zero every span so serialized bytes are a content
-        // address (identity survives whitespace/comment edits).
         writeln!(
             out,
             "impl {} {{\n    pub fn strip_spans(&mut self) {{\n        match self {{",
@@ -826,7 +1038,7 @@ impl<'a> Model<'a> {
             if let Some(inner) = self.hidden_enum(kind) {
                 let variant = self
                     .ann(kind)
-                    .and_then(|a| a.as_variant.clone())
+                    .and_then(|annotation| annotation.as_variant.clone())
                     .unwrap_or_else(|| inner.name.clone());
                 writeln!(
                     out,
@@ -871,18 +1083,16 @@ impl<'a> Model<'a> {
 
         writeln!(
             out,
-            "pub fn lower_{}(n: &ResolvedCstNode) -> {} {{\n    match n.kind() {{",
+            "pub fn try_lower_{}<N: ParseNode>(n: &N) -> Result<{}, TypedAstLowerError> {{\n    match n.kind() {{",
             snake(&a.name),
             a.name
         )
         .unwrap();
-        // Visible alternatives dispatch on their exact kind; hidden ones guard on
-        // the enum's kind set, so put them last.
         for alt in &a.alts {
             if let AdHocAlt::Visible(kind) = alt {
                 writeln!(
                     out,
-                    "        {kind:?} => {},",
+                    "        {kind:?} => Ok({}),",
                     self.variant_lower(&a.name, kind, "n")
                 )
                 .unwrap();
@@ -890,16 +1100,16 @@ impl<'a> Model<'a> {
         }
         for alt in &a.alts {
             if let AdHocAlt::Hidden(hidden_kind, enum_name) = alt {
-                let e = self.hidden_enum(hidden_kind).unwrap();
+                let definition = self.hidden_enum(hidden_kind).unwrap();
                 let kinds = self
-                    .dispatch_kinds(e)
+                    .dispatch_kinds(definition)
                     .iter()
-                    .map(|k| format!("{k:?}"))
+                    .map(|kind| format!("{kind:?}"))
                     .collect::<Vec<_>>()
                     .join(" | ");
                 writeln!(
                     out,
-                    "        {kinds} => {}::{enum_name}(lower_{}(n)),",
+                    "        {kinds} => Ok({}::{enum_name}(try_lower_{}(n)?)),",
                     a.name,
                     snake(enum_name)
                 )
@@ -908,7 +1118,7 @@ impl<'a> Model<'a> {
         }
         writeln!(
             out,
-            "        other => panic!(\"unexpected `{}` node kind `{{other}}`\"),\n    }}\n}}\n",
+            "        other => Err(TypedAstLowerError::UnexpectedKind {{ expected: {:?}, actual: other.to_owned() }}),\n    }}\n}}\n",
             a.name
         )
         .unwrap();
@@ -960,47 +1170,63 @@ impl<'a> Model<'a> {
     fn token_lower_expr(&self, f: &FieldDef, s: &StructDef, tokens: &[String]) -> String {
         let set = tokens
             .iter()
-            .map(|t| format!("{t:?}"))
+            .map(|token| format!("{token:?}"))
             .collect::<Vec<_>>()
             .join(", ");
         let lower = if tokens.len() == 1 {
-            "crate::support::span"
+            "span"
         } else {
-            "crate::support::node_text"
+            "node_text"
         };
         match f.mult {
-            Mult::Opt => format!(
-                "token_field_nodes(n, {:?}, &[{set}]).into_iter().next().map({lower})",
+            Mult::Opt if tokens.len() == 1 => format!(
+                "token_field_nodes(n, {:?}, &[{set}]).into_iter().next().map(|node| {lower}(&node))",
                 f.grammar_name
             ),
+            Mult::Opt => format!(
+                "token_field_nodes(n, {:?}, &[{set}]).into_iter().next().map(|node| {lower}(&node)).transpose()?",
+                f.grammar_name
+            ),
+            Mult::One if tokens.len() == 1 => format!(
+                "token_field_nodes(n, {:?}, &[{set}]).into_iter().next().map(|node| {lower}(&node)).ok_or_else(|| TypedAstLowerError::MissingField {{ node_kind: {:?}.to_owned(), field: {:?} }})?",
+                f.grammar_name, s.kind, f.grammar_name
+            ),
             Mult::One => format!(
-                "token_field_nodes(n, {:?}, &[{set}]).into_iter().next().map({lower})\n            \
-                 .unwrap_or_else(|| panic!(\"missing token field `{}` on `{}`\"))",
-                f.grammar_name, f.grammar_name, s.kind
+                "token_field_nodes(n, {:?}, &[{set}]).into_iter().next().map(|node| {lower}(&node)).transpose()?.ok_or_else(|| TypedAstLowerError::MissingField {{ node_kind: {:?}.to_owned(), field: {:?} }})?",
+                f.grammar_name, s.kind, f.grammar_name
+            ),
+            Mult::Many if tokens.len() == 1 => format!(
+                "token_field_nodes(n, {:?}, &[{set}]).into_iter().map(|node| {lower}(&node)).collect()",
+                f.grammar_name
             ),
             Mult::Many => format!(
-                "token_field_nodes(n, {:?}, &[{set}]).into_iter().map({lower}).collect()",
+                "token_field_nodes(n, {:?}, &[{set}]).into_iter().map(|node| {lower}(&node)).collect::<Result<Vec<_>, _>>()?",
                 f.grammar_name
             ),
         }
     }
 
-    /// The single-argument function lowering one child node of this field.
     fn field_lower_fn(&self, f: &FieldDef) -> String {
         match &f.shape {
             Shape::TokenSet(_) => unreachable!("token fields lower via token_field_nodes"),
-            Shape::Enum(name) => format!("lower_{}", snake(name)),
-            Shape::Struct(kind) => format!("lower_{kind}"),
-            Shape::Leaf(decode) => decode.lower_fn().to_string(),
-            Shape::AdHoc(idx) => format!("lower_{}", snake(&self.adhocs[*idx].name)),
+            Shape::Enum(name) => format!("try_lower_{}", snake(name)),
+            Shape::Struct(kind) => format!("try_lower_{kind}"),
+            Shape::Leaf(_) => String::new(),
+            Shape::AdHoc(idx) => format!("try_lower_{}", snake(&self.adhocs[*idx].name)),
+        }
+    }
+
+    fn lower_node_expr(&self, f: &FieldDef, node: &str) -> String {
+        match &f.shape {
+            Shape::Leaf(decode) => decode.lower(node),
+            _ => format!("{}({node})?", self.field_lower_fn(f)),
         }
     }
 
     fn emit_struct(&self, out: &mut String, s: &StructDef) {
         writeln!(
             out,
-            "#[derive(facet::Facet, Debug, Clone, PartialEq)]\npub struct {} {{\n    \
-             pub span: crate::support::Span,",
+            "#[derive(facet::Facet, Debug, Clone, PartialEq)]\npub struct {} {{\n    pub span: crate::support::Span,",
             s.name
         )
         .unwrap();
@@ -1011,8 +1237,7 @@ impl<'a> Model<'a> {
 
         writeln!(
             out,
-            "pub fn lower_{}(n: &ResolvedCstNode) -> {} {{\n    {} {{\n        \
-             span: crate::support::span(n),",
+            "pub fn try_lower_{}<N: ParseNode>(n: &N) -> Result<{}, TypedAstLowerError> {{\n    Ok({} {{\n        span: span(n),",
             s.kind, s.name, s.name
         )
         .unwrap();
@@ -1020,38 +1245,48 @@ impl<'a> Model<'a> {
             let expr = if let Shape::TokenSet(tokens) = &f.shape {
                 self.token_lower_expr(f, s, tokens)
             } else {
-                let lower = self.field_lower_fn(f);
                 match f.mult {
-                    Mult::One if f.boxed => format!(
-                        "Box::new({lower}(crate::support::field_one(n, {:?}, {:?})))",
-                        f.grammar_name, s.kind
-                    ),
-                    Mult::One => format!(
-                        "{lower}(crate::support::field_one(n, {:?}, {:?}))",
-                        f.grammar_name, s.kind
-                    ),
-                    Mult::Opt if f.boxed => format!(
-                        "crate::support::field_opt(n, {:?}).map(|n| Box::new({lower}(n)))",
-                        f.grammar_name
-                    ),
-                    Mult::Opt => format!(
-                        "crate::support::field_opt(n, {:?}).map({lower})",
-                        f.grammar_name
-                    ),
-                    Mult::Many => format!(
-                        "crate::support::fields(n, {:?}).map({lower}).collect()",
-                        f.grammar_name
-                    ),
+                    Mult::One if f.boxed => {
+                        let lowered = self.lower_node_expr(f, "&field_one(n, FIELD)?");
+                        format!(
+                            "Box::new({})",
+                            lowered.replace("FIELD", &format!("{:?}", f.grammar_name))
+                        )
+                    }
+                    Mult::One => {
+                        let lowered = self.lower_node_expr(f, "&field_one(n, FIELD)?");
+                        lowered.replace("FIELD", &format!("{:?}", f.grammar_name))
+                    }
+                    Mult::Opt if f.boxed => {
+                        let lowered = self.lower_node_expr(f, "&node");
+                        format!(
+                            "field_opt(n, {:?}).map(|node| Ok(Box::new({lowered}))).transpose()?",
+                            f.grammar_name
+                        )
+                    }
+                    Mult::Opt => {
+                        let lowered = self.lower_node_expr(f, "&node");
+                        format!(
+                            "field_opt(n, {:?}).map(|node| Ok({lowered})).transpose()?",
+                            f.grammar_name
+                        )
+                    }
+                    Mult::Many => {
+                        let lowered = self.lower_node_expr(f, "&node");
+                        format!(
+                            "fields(n, {:?}).map(|node| Ok({lowered})).collect::<Result<Vec<_>, _>>()?",
+                            f.grammar_name
+                        )
+                    }
                 }
             };
             writeln!(out, "        {}: {expr},", f.rust_name).unwrap();
         }
-        writeln!(out, "    }}\n}}\n").unwrap();
+        writeln!(out, "    }})\n}}\n").unwrap();
 
         writeln!(
             out,
-            "impl {} {{\n    pub fn strip_spans(&mut self) {{\n        \
-             self.span = crate::support::Span {{ start: 0, end: 0 }};",
+            "impl {} {{\n    pub fn strip_spans(&mut self) {{\n        self.span = crate::support::Span {{ start: 0, end: 0 }};",
             s.name
         )
         .unwrap();
@@ -1193,7 +1428,7 @@ fn snake(name: &str) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::{Annotations, Model, TypedAstConfig};
+    use super::{Annotations, GenerateTypedAstError, Model, TypedAstConfig};
     use snark::grammar::RawGrammarJson;
     use snark::lexical::LexicalFacts;
     use snark::lower::weavy::{WeavyParsePlan, parse_prepared_weavy_with_report};
@@ -1215,7 +1450,7 @@ mod tests {
             generated_by: "cycle/build.rs",
             language_name: "cycle",
         };
-        Model::build(&raw, &anns).generate(&config)
+        Model::build(&raw, &anns).unwrap().generate(&config)
     }
 
     fn parse_resolved(grammar_source: &str, input: &str) -> ResolvedCstNode {
@@ -1268,6 +1503,93 @@ mod tests {
             .filter(|c| c.text().is_some_and(|t| set.contains(&t)))
             .collect()
     }
+    #[test]
+    fn generated_lowering_is_generic_and_structured() {
+        let generated = generate(
+            r#"
+module.exports = grammar({
+  name: "fallible",
+  rules: {
+    source_file: $ => field("stmt", $._stmt),
+    _stmt: $ => choice($.let_stmt),
+    let_stmt: $ => seq("let", field("name", $.ident), "=", field("value", $.bool_lit)),
+    ident: $ => /[a-z]+/,
+    bool_lit: $ => choice("true", "false"),
+  },
+});
+ast({
+  _stmt: { enum: "Stmt" },
+  bool_lit: { decode: "bool" },
+});
+"#,
+        );
+
+        assert!(generated.contains("pub enum TypedAstLowerError"));
+        assert!(generated.contains("pub fn try_lower_source_file<N: ParseNode>"));
+        assert!(generated.contains("TypedAstLowerError::UnexpectedKind"));
+        assert!(generated.contains("TypedAstLowerError::MissingField"));
+        assert!(generated.contains("TypedAstLowerError::InvalidLeaf"));
+        assert!(generated.contains("expected: \"`true` or `false`\""));
+        assert!(generated.contains("field_one(n, \"stmt\")?"));
+        assert!(!generated.contains("panic!(\"unexpected"));
+        assert!(!generated.contains("panic!(\"missing"));
+    }
+
+    #[test]
+    fn unsupported_generator_shape_returns_structured_error() {
+        let (grammar_json, annotations_json) = crate::emit_source_with_annotations_boa(
+            r#"
+module.exports = grammar({
+  name: "unsupported",
+  rules: {
+    source_file: $ => field("part", choice("...", $.splice)),
+    splice: $ => /[a-z]+/,
+  },
+});
+"#,
+            "unsupported.js",
+        )
+        .unwrap();
+        let raw = RawGrammarJson::from_tree_sitter_json_str(&grammar_json).unwrap();
+        let anns: Annotations = facet_json::from_str(&annotations_json).unwrap();
+
+        let error = match Model::build(&raw, &anns) {
+            Ok(_) => panic!("unsupported shape unexpectedly generated"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            GenerateTypedAstError::UnsupportedShape { rule, detail }
+                if rule == "source_file" && detail.contains("mixes tokens and rules")
+        ));
+    }
+
+    #[test]
+    fn forward_referenced_fielded_rule_is_a_struct() {
+        let generated = generate(
+            r#"
+module.exports = grammar({
+  name: "forward",
+  rules: {
+    source_file: $ => field("function", $.function_decl),
+    function_decl: $ => seq(
+      "fn",
+      field("params", $.param_list),
+      field("body", $.block),
+    ),
+    param_list: $ => seq("(", field("param", $.ident), ")"),
+    block: $ => seq("{", field("stmt", $.ident), "}"),
+    ident: $ => /[a-z]+/,
+  },
+});
+"#,
+        );
+
+        assert!(generated.contains("pub params: ParamList,"));
+        assert!(generated.contains("pub body: Block,"));
+        assert!(generated.contains("try_lower_param_list"));
+        assert!(generated.contains("try_lower_block"));
+    }
 
     #[test]
     fn boxes_struct_field_that_closes_type_cycle() {
@@ -1295,7 +1617,7 @@ module.exports = grammar({
         assert!(generated.contains("pub else_clause: Option<ElseClause>,"));
         assert!(generated.contains("pub if_stmt: Option<Box<IfStatement>>,"));
         assert!(generated.contains(
-            r#"if_stmt: crate::support::field_opt(n, "if_stmt").map(|n| Box::new(lower_if_statement(n))),"#
+            r#"if_stmt: field_opt(n, "if_stmt").map(|node| Ok(Box::new(try_lower_if_statement(&node)?))).transpose()?"#
         ));
     }
 
@@ -1349,10 +1671,10 @@ module.exports = grammar({
         assert!(generated.contains("pub op: crate::support::Spanned<String>,"));
         assert!(generated.contains("pub marks: Vec<crate::support::Span>,"));
         assert!(generated.contains(
-            r#"op: token_field_nodes(n, "op", &["+", "-"]).into_iter().next().map(crate::support::node_text)"#
+            r#"op: token_field_nodes(n, "op", &["+", "-"]).into_iter().next().map(|node| node_text(&node)).transpose()?"#
         ));
         assert!(generated.contains(
-            r#"marks: token_field_nodes(n, "mark", &["!"]).into_iter().map(crate::support::span).collect(),"#
+            r#"marks: token_field_nodes(n, "mark", &["!"]).into_iter().map(|node| span(&node)).collect()"#
         ));
 
         let root = parse_resolved(grammar, "a + b!!!");
@@ -1390,7 +1712,7 @@ ast({
         assert_eq!(first.matches("pub enum Expr").count(), 1);
         assert!(first.contains("    Ident(crate::support::Spanned<String>),"));
         assert!(first.contains("    Call(Box<Call>),"));
-        assert!(first.contains(r#""call" => Expr::Call(Box::new(lower_call(n))),"#));
+        assert!(first.contains(r#""call" => Ok(Expr::Call(Box::new(try_lower_call(n)?))),"#));
     }
 
     #[test]
@@ -1423,12 +1745,12 @@ module.exports = grammar({
         assert!(generated.contains("pub elems: Vec<crate::support::Spanned<String>>"));
         assert!(generated.contains("pub entries: Vec<crate::support::Spanned<String>>"));
         assert!(generated.contains(
-            r#"items: crate::support::fields(n, "item").map(crate::support::node_text).collect(),"#
+            r#"items: fields(n, "item").map(|node| Ok(node_text(&node)?)).collect::<Result<Vec<_>, _>>()?"#
         ));
         assert!(generated.contains(
-            r#"elems: crate::support::fields(n, "elem").map(crate::support::node_text).collect(),"#
+            r#"elems: fields(n, "elem").map(|node| Ok(node_text(&node)?)).collect::<Result<Vec<_>, _>>()?"#
         ));
-        assert!(generated.contains(r#"entries: crate::support::fields(n, "entry").map(crate::support::node_text).collect(),"#));
+        assert!(generated.contains(r#"entries: fields(n, "entry").map(|node| Ok(node_text(&node)?)).collect::<Result<Vec<_>, _>>()?"#));
 
         let root = parse_resolved(grammar, "{a b}<c>[d,e,](f;g;)");
         assert_eq!(field_count(child(&root, "many"), "item"), 2);
