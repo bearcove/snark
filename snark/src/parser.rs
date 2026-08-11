@@ -5026,7 +5026,6 @@ impl ParseNode for &ResolvedCstNode {
     }
 }
 
-/// Arena-backed resolved CST with anonymous terminals and source ranges preserved.
 /// Stable editor-facing recovery diagnostic kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseDiagnosticCode {
@@ -6779,6 +6778,39 @@ mod tests {
         assert_eq!(diagnostic.cost, None);
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct ObservableCstNode {
+        kind: String,
+        symbol: Option<ParserSymbol>,
+        field: Option<String>,
+        bytes: ByteRange,
+        points: PointRange,
+        named: bool,
+        visible: bool,
+        extra: bool,
+        text: Option<String>,
+        children: Vec<ObservableCstNode>,
+    }
+
+    fn observable_cst_node(node: ResolvedCstTreeNode<'_>) -> ObservableCstNode {
+        ObservableCstNode {
+            kind: node.kind().to_owned(),
+            symbol: node.symbol(),
+            field: node.field().map(str::to_owned),
+            bytes: node.bytes(),
+            points: node.points(),
+            named: node.named(),
+            visible: node.visible(),
+            extra: node.extra(),
+            text: node.text().map(str::to_owned),
+            children: node.children().map(observable_cst_node).collect(),
+        }
+    }
+
+    fn observable_cst(tree: &ResolvedCstTree) -> Vec<ObservableCstNode> {
+        tree.roots().map(observable_cst_node).collect()
+    }
+
     #[test]
     fn incremental_recovery_document_matches_fresh_final_source() {
         let (validated, parser, table) = wrapped_extra_reuse_fixture();
@@ -6791,22 +6823,7 @@ mod tests {
         let mut fresh = crate::lower::weavy::WeavyParseSession::new(&plan, &parser, &table);
         let parsed = fresh.parse_recovering_document("a@\nb2").unwrap();
 
-        let projection = |tree: &ResolvedCstTree| {
-            tree.descendants()
-                .map(|node| {
-                    (
-                        node.kind().to_owned(),
-                        node.field().map(str::to_owned),
-                        node.bytes(),
-                        node.points(),
-                        node.named(),
-                        node.extra(),
-                        node.text().map(str::to_owned),
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(projection(&reparsed.tree), projection(&parsed.tree));
+        assert_eq!(observable_cst(&reparsed.tree), observable_cst(&parsed.tree));
         assert_eq!(reparsed.diagnostics(), parsed.diagnostics());
         assert!(reparsed.report.reusable_node_count > 0);
         assert_eq!(reparsed.execution_lane(), reparsed.report.execution_lane);

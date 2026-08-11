@@ -7595,9 +7595,8 @@ impl<'a> WeavyParseSession<'a> {
         &mut self,
         input: impl Into<String>,
     ) -> Result<RecoveringDocument, WeavyParseError> {
-        let input = input.into();
-        self.parse_recovering(input.clone())?;
-        self.recovering_document(&input)
+        self.parse_recovering(input)?;
+        self.recovering_document()
     }
 
     /// Incrementally reparse with recovery and return editor-facing facts.
@@ -7606,12 +7605,15 @@ impl<'a> WeavyParseSession<'a> {
         edit: parser_ir::ParserInputEdit,
         new_input: impl Into<String>,
     ) -> Result<RecoveringDocument, WeavyParseError> {
-        let new_input = new_input.into();
-        self.reparse_recovering(edit, new_input.clone())?;
-        self.recovering_document(&new_input)
+        self.reparse_recovering(edit, new_input)?;
+        self.recovering_document()
     }
 
-    fn recovering_document(&self, input: &str) -> Result<RecoveringDocument, WeavyParseError> {
+    fn recovering_document(&self) -> Result<RecoveringDocument, WeavyParseError> {
+        let input = self
+            .last_input
+            .as_deref()
+            .expect("recovering parse input was just installed");
         let report = self
             .last_report
             .as_ref()
