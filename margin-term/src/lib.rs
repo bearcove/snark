@@ -286,8 +286,23 @@ fn render_window(
     theme: Theme,
 ) {
     let glyphs = glyphs(capabilities.glyph_mode);
-    let source_name = hyperlink_text(
-        window.source_name.as_str(),
+    let primary_position = window
+        .annotations
+        .iter()
+        .filter(|annotation| annotation.role == AnnotationRole::PrimaryLabel)
+        .flat_map(|annotation| &annotation.segments)
+        .min_by_key(|segment| (segment.line_number, segment.start_column));
+    let source_label = match primary_position {
+        Some(position) => format!(
+            "{}:{}:{}",
+            window.source_name,
+            position.line_number,
+            position.start_column + 1
+        ),
+        None => window.source_name.clone(),
+    };
+    let source_label = hyperlink_text(
+        source_label.as_str(),
         window.source_hyperlink.as_deref(),
         capabilities.hyperlink_mode,
     );
@@ -295,7 +310,7 @@ fn render_window(
         output,
         "{} {}",
         colorize(glyphs.source, theme.connector, capabilities.color_level),
-        source_name
+        source_label
     );
     if window.omitted_before {
         let _ = writeln!(

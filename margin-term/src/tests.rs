@@ -75,7 +75,7 @@ fn render_supports_plaintext_ascii_output() {
 
     println!("{rendered}");
     assert!(rendered.contains("error: unknown name `missing`"));
-    assert!(rendered.contains("--> src/main.vx"));
+    assert!(rendered.contains("--> src/main.vx:2:10"));
     assert!(rendered.contains("|"));
     assert!(
         !rendered.contains("1 | let number = 1\n  | ^^^"),
@@ -128,7 +128,11 @@ fn render_can_hyperlink_source_headers() {
         rendered.contains("\u{1b}]8;;file:///workspace/src/main.vx\u{1b}\\"),
         "{rendered}"
     );
-    assert!(rendered.contains("src/main.vx"), "{rendered}");
+    assert!(
+        rendered.contains("\u{1b}]8;;file:///workspace/src/main.vx\u{1b}\\"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("src/main.vx:2:10"), "{rendered}");
 }
 
 /// d[verify label.multiline-message-alignment]
