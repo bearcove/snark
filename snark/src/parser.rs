@@ -5027,11 +5027,50 @@ impl ParseNode for &ResolvedCstNode {
 }
 
 /// Arena-backed resolved CST with anonymous terminals and source ranges preserved.
+/// Stable editor-facing recovery diagnostic kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseDiagnosticCode {
+    /// Input bytes were skipped to recover parsing.
+    UnexpectedToken,
+    /// A grammar symbol was inserted by recovery.
+    MissingToken,
+}
+
+/// Recovery operation represented by a parse diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseRepair {
+    /// Skip unexpected authored input.
+    SkipUnexpected,
+    /// Insert a missing grammar symbol.
+    InsertMissing,
+}
+
+/// Normalized recovery diagnostic attached to an arena CST.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseDiagnostic {
+    /// Stable diagnostic code.
+    pub code: ParseDiagnosticCode,
+    /// Source byte range.
+    pub bytes: ByteRange,
+    /// Source point range.
+    pub points: PointRange,
+    /// Unexpected authored text, when recovery skipped input.
+    pub unexpected: Option<String>,
+    /// Expected parser symbol name, when recovery inserted a symbol.
+    pub expected: Option<String>,
+    /// Repair applied by recovery.
+    pub repair: ParseRepair,
+    /// Parser-provided recovery cost, when the event carries one.
+    pub cost: Option<u32>,
+}
+
+/// Arena-backed resolved CST with anonymous terminals and source ranges preserved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCstTree {
     source: Arc<str>,
     roots: Vec<usize>,
     items: Vec<ResolvedCstItem>,
+    diagnostics: Vec<ParseDiagnostic>,
 }
 
 /// Borrowed handle into a [`ResolvedCstTree`].
@@ -5074,6 +5113,24 @@ impl ResolvedCstTree {
             .iter()
             .copied()
             .map(|index| ResolvedCstTreeNode { tree: self, index })
+    }
+
+    /// Recovery diagnostics produced while materializing this tree.
+    pub fn diagnostics(&self) -> &[ParseDiagnostic] {
+        &self.diagnostics
+    }
+
+    /// Whether recovery materialized an error or missing-token diagnostic.
+    pub fn contains_error(&self) -> bool {
+        !self.diagnostics.is_empty()
+    }
+
+    /// All materialized nodes in pre-order without allocating an owned tree.
+    pub fn descendants(&self) -> ResolvedCstTreeDescendants<'_> {
+        ResolvedCstTreeDescendants {
+            tree: self,
+            stack: self.roots.iter().rev().copied().collect(),
+        }
     }
 
     /// Kind for the public root projection.
@@ -5196,6 +5253,31 @@ impl<'a> ResolvedCstTreeNode<'a> {
             indices: self.item().children.iter(),
         }
     }
+
+    /// First direct child carrying `field`.
+    pub fn child_by_field(&self, field: &str) -> Option<ResolvedCstTreeNode<'a>> {
+        self.children().find(|child| child.field() == Some(field))
+    }
+}
+
+/// Pre-order iterator over an arena CST.
+pub struct ResolvedCstTreeDescendants<'a> {
+    tree: &'a ResolvedCstTree,
+    stack: Vec<usize>,
+}
+
+impl<'a> Iterator for ResolvedCstTreeDescendants<'a> {
+    type Item = ResolvedCstTreeNode<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let index = self.stack.pop()?;
+        self.stack
+            .extend(self.tree.items[index].children.iter().rev().copied());
+        Some(ResolvedCstTreeNode {
+            tree: self.tree,
+            index,
+        })
+    }
 }
 
 /// Iterator over borrowed children of an arena-backed CST node.
@@ -5288,6 +5370,7 @@ pub(crate) struct ResolvedCstBuilder<'a> {
     source: Arc<str>,
     names: ResolvedCstNames,
     field_by_child: Vec<Option<Arc<str>>>,
+    diagnostics: Vec<ParseDiagnostic>,
     item_indices_by_node: Vec<SmallVec<[usize; 1]>>,
     items: Vec<ResolvedCstItem>,
     roots: Vec<usize>,
@@ -5420,6 +5503,7 @@ impl<'a> ResolvedCstBuilder<'a> {
             source: Arc::<str>::from(input),
             names,
             field_by_child: vec![None; node_capacity],
+            diagnostics: Vec::new(),
             item_indices_by_node,
             items: Vec::with_capacity(capacity),
             roots: Vec::new(),
@@ -5513,8 +5597,18 @@ impl<'a> ResolvedCstBuilder<'a> {
                 node,
                 bytes,
                 points,
+                error_cost,
                 ..
             } => {
+                self.diagnostics.push(ParseDiagnostic {
+                    code: ParseDiagnosticCode::UnexpectedToken,
+                    bytes: *bytes,
+                    points: *points,
+                    unexpected: source_slice(self.input, *bytes).map(str::to_owned),
+                    expected: None,
+                    repair: ParseRepair::SkipUnexpected,
+                    cost: Some(*error_cost),
+                });
                 self.push_item(ResolvedCstItem {
                     kind: Arc::clone(&self.names.error),
                     symbol: None,
@@ -5536,6 +5630,15 @@ impl<'a> ResolvedCstBuilder<'a> {
                 points,
                 ..
             } => {
+                self.diagnostics.push(ParseDiagnostic {
+                    code: ParseDiagnosticCode::MissingToken,
+                    bytes: *bytes,
+                    points: *points,
+                    unexpected: None,
+                    expected: Some(self.symbol_kind(*symbol, None).to_string()),
+                    repair: ParseRepair::InsertMissing,
+                    cost: None,
+                });
                 self.push_item(ResolvedCstItem {
                     kind: self.symbol_kind(*symbol, None),
                     symbol: Some(*symbol),
@@ -5641,6 +5744,7 @@ impl<'a> ResolvedCstBuilder<'a> {
             source: self.source,
             roots,
             items: self.items,
+            diagnostics: self.diagnostics,
         })
     }
 
@@ -6572,6 +6676,7 @@ mod tests {
         grammar::RawGrammarJson,
         lex_match::{match_pattern, match_pattern_with_flags},
         lexical::LexicalFacts,
+        runtime_input::{ByteOffset, PointBytes, Row, Utf8ColumnBytes},
         validated::ValidatedGrammar,
     };
 
@@ -6580,6 +6685,131 @@ mod tests {
         fn assert_parse_node<T: ParseNode>() {}
 
         assert_parse_node::<ResolvedCstTreeNode<'_>>();
+    }
+
+    #[test]
+    fn recovery_reports_stable_error_diagnostics() {
+        let (validated, parser, table) = wrapped_extra_reuse_fixture();
+        let plan = crate::lower::weavy::WeavyParsePlan::new(&validated, &parser, &table).unwrap();
+        let mut session = crate::lower::weavy::WeavyParseSession::new(&plan, &parser, &table);
+
+        let document = session.parse_recovering_document("a@\nb1").unwrap();
+
+        assert!(document.tree.contains_error());
+        assert!(
+            document
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == ParseDiagnosticCode::UnexpectedToken)
+        );
+        assert!(
+            document
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.bytes.start() <= diagnostic.bytes.end())
+        );
+        let diagnostic = document
+            .diagnostics()
+            .iter()
+            .find(|diagnostic| diagnostic.code == ParseDiagnosticCode::UnexpectedToken)
+            .unwrap();
+        assert_eq!(diagnostic.unexpected.as_deref(), Some("@\n"));
+        assert_eq!(diagnostic.expected, None);
+        assert_eq!(diagnostic.repair, ParseRepair::SkipUnexpected);
+        assert_eq!(diagnostic.cost, Some(2));
+        assert_eq!(document.tree.diagnostics(), document.diagnostics());
+    }
+
+    #[test]
+    fn resolved_cst_inspection_is_borrowed_and_field_aware() {
+        let mut root = test_resolved_item("root", Some(TreeNodeId::from_index(0)), 0, 1, 1);
+        let mut child = test_resolved_item("child", Some(TreeNodeId::from_index(1)), 0, 1, 0);
+        child.field = Some(Arc::<str>::from("value"));
+        root.children.push(0);
+        let tree = ResolvedCstTree {
+            source: Arc::<str>::from("x"),
+            roots: vec![1],
+            items: vec![child, root],
+            diagnostics: Vec::new(),
+        };
+        let root = tree.root().unwrap();
+
+        assert_eq!(
+            tree.descendants()
+                .map(|node| node.kind())
+                .collect::<Vec<_>>(),
+            vec!["root", "child"]
+        );
+        assert_eq!(
+            root.child_by_field("value").map(|node| node.kind()),
+            Some("child")
+        );
+    }
+
+    #[test]
+    fn missing_diagnostic_preserves_symbol_without_inventing_cost() {
+        let (_, parser, _) = auto_close_fixture();
+        let tree = ResolvedCstBuilder::with_names_and_node_capacity(
+            &parser,
+            "",
+            1,
+            0,
+            ResolvedCstNames::from_parser(&parser),
+        );
+        let mut tree = tree;
+        let zero = ByteRange::new(ByteOffset::new(0), ByteOffset::new(0)).unwrap();
+        let point = PointBytes::new(Row::new(0), Utf8ColumnBytes::new(0));
+        let points = PointRange::new(point, point).unwrap();
+        tree.push(&TreeEvent::Missing {
+            version: StackVersionId::from_index(0),
+            symbol: ParserSymbol::Eof,
+            bytes: zero,
+            points,
+        });
+        let tree = tree.finish_tree().unwrap();
+        let diagnostic = tree
+            .diagnostics()
+            .iter()
+            .find(|diagnostic| diagnostic.code == ParseDiagnosticCode::MissingToken)
+            .unwrap();
+
+        assert!(diagnostic.expected.is_some());
+        assert_eq!(diagnostic.unexpected, None);
+        assert_eq!(diagnostic.repair, ParseRepair::InsertMissing);
+        assert_eq!(diagnostic.cost, None);
+    }
+
+    #[test]
+    fn incremental_recovery_document_matches_fresh_final_source() {
+        let (validated, parser, table) = wrapped_extra_reuse_fixture();
+        let plan = crate::lower::weavy::WeavyParsePlan::new(&validated, &parser, &table).unwrap();
+        let mut incremental = crate::lower::weavy::WeavyParseSession::new(&plan, &parser, &table);
+        incremental.parse_recovering_document("a@\nb1").unwrap();
+        let reparsed = incremental
+            .reparse_recovering_document(ParserInputEdit::new(4, 5, 5), "a@\nb2")
+            .unwrap();
+        let mut fresh = crate::lower::weavy::WeavyParseSession::new(&plan, &parser, &table);
+        let parsed = fresh.parse_recovering_document("a@\nb2").unwrap();
+
+        let projection = |tree: &ResolvedCstTree| {
+            tree.descendants()
+                .map(|node| {
+                    (
+                        node.kind().to_owned(),
+                        node.field().map(str::to_owned),
+                        node.bytes(),
+                        node.points(),
+                        node.named(),
+                        node.extra(),
+                        node.text().map(str::to_owned),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(projection(&reparsed.tree), projection(&parsed.tree));
+        assert_eq!(reparsed.diagnostics(), parsed.diagnostics());
+        assert!(reparsed.report.reusable_node_count > 0);
+        assert_eq!(reparsed.execution_lane(), reparsed.report.execution_lane);
     }
 
     fn normalize(input: &str) -> ParserGrammar {

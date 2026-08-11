@@ -7397,6 +7397,40 @@ const fn runtime_weavy_incremental_block_execution() -> RuntimeWeavyBlockExecuti
     }
 }
 
+/// Compact editor-facing summary of a recovering parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveringDocumentReport {
+    /// Runtime execution lane used for the parse.
+    pub execution_lane: WeavyParseExecutionLane,
+    /// Reusable subtrees retained for later incremental reparsing.
+    pub reusable_node_count: usize,
+    /// Accepted runtime branches before identical-tree coalescing.
+    pub accepted_count: usize,
+    /// Failed branches observed during parsing.
+    pub failure_count: usize,
+}
+
+/// Editor-facing recovering parse result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveringDocument {
+    /// Arena-backed CST for the accepted recovery branch.
+    pub tree: parser_ir::ResolvedCstTree,
+    /// Compact parse and reuse facts for this document.
+    pub report: RecoveringDocumentReport,
+}
+
+impl RecoveringDocument {
+    /// Normalized recovery diagnostics attached to the document tree.
+    pub fn diagnostics(&self) -> &[parser_ir::ParseDiagnostic] {
+        self.tree.diagnostics()
+    }
+
+    /// Runtime execution lane used to produce this document.
+    pub const fn execution_lane(&self) -> WeavyParseExecutionLane {
+        self.report.execution_lane
+    }
+}
+
 /// Persistent Weavy parse session for edited inputs.
 pub struct WeavyParseSession<'a> {
     plan: &'a WeavyParsePlan,
@@ -7554,6 +7588,47 @@ impl<'a> WeavyParseSession<'a> {
             .last_report
             .as_ref()
             .expect("session report was just installed"))
+    }
+
+    /// Parse with recovery and return an editor-facing CST and diagnostics.
+    pub fn parse_recovering_document(
+        &mut self,
+        input: impl Into<String>,
+    ) -> Result<RecoveringDocument, WeavyParseError> {
+        let input = input.into();
+        self.parse_recovering(input.clone())?;
+        self.recovering_document(&input)
+    }
+
+    /// Incrementally reparse with recovery and return editor-facing facts.
+    pub fn reparse_recovering_document(
+        &mut self,
+        edit: parser_ir::ParserInputEdit,
+        new_input: impl Into<String>,
+    ) -> Result<RecoveringDocument, WeavyParseError> {
+        let new_input = new_input.into();
+        self.reparse_recovering(edit, new_input.clone())?;
+        self.recovering_document(&new_input)
+    }
+
+    fn recovering_document(&self, input: &str) -> Result<RecoveringDocument, WeavyParseError> {
+        let report = self
+            .last_report
+            .as_ref()
+            .expect("recovering parse report was just installed");
+        let tree = report
+            .accepted_resolved_cst(self.parser, input)
+            .ok_or(WeavyParseError::MissingResolvedTree)?;
+        let execution_lane = report.execution_lane();
+        Ok(RecoveringDocument {
+            tree,
+            report: RecoveringDocumentReport {
+                execution_lane,
+                reusable_node_count: report.reusable_node_count(),
+                accepted_count: report.accepted_count(),
+                failure_count: report.failure_count(),
+            },
+        })
     }
 }
 
@@ -7862,7 +7937,6 @@ where
     .map(Some)
 }
 
-
 struct RuntimeWeavyAccepted {
     version: parser_ir::StackVersionId,
     root: parser_ir::TreeNodeId,
@@ -8093,8 +8167,7 @@ impl<'a> RuntimeWeavyReuseIndex<'a> {
             }
         }
         let mut ranged_event_indices = BTreeMap::<usize, Vec<usize>>::new();
-        let mut field_event_indices_by_node =
-            HashMap::<parser_ir::TreeNodeId, Vec<usize>>::new();
+        let mut field_event_indices_by_node = HashMap::<parser_ir::TreeNodeId, Vec<usize>>::new();
         for (index, event) in report.tree_events.iter().enumerate() {
             if let Some((start, _)) = runtime_weavy_tree_event_byte_range(event) {
                 ranged_event_indices.entry(start).or_default().push(index);
@@ -9557,7 +9630,11 @@ fn step_runtime_weavy_branch(
     }
     if let Some(reuse_index) = step.reuse_index
         && reuse_index
-            .get(branch.byte_position, branch.stack.last().expect("non-empty stack").state, branch.scanner_snapshot)
+            .get(
+                branch.byte_position,
+                branch.stack.last().expect("non-empty stack").state,
+                branch.scanner_snapshot,
+            )
             .is_some()
     {
         let branch = try_reuse_runtime_weavy_node(branch, reuse_index, input_ctx, output)
@@ -9903,7 +9980,6 @@ fn run_runtime_weavy_state_probe(
     }
     Ok(dispatch)
 }
-
 
 /// Total dynamic precedence of an accepted tree: the sum of each reduced
 /// production's `dynamic_precedence`. Used to pick among ambiguous GLR parses
@@ -10646,9 +10722,8 @@ impl<'a> RuntimeWeavyStepper<'a> {
         if let Some(scanner) = token.scanner {
             self.scanner_snapshot = scanner.after();
         }
-        self.lookahead_id = parser_ir::LookaheadTokenId::from_index(
-            self.lookahead_id.get() as usize + 1,
-        );
+        self.lookahead_id =
+            parser_ir::LookaheadTokenId::from_index(self.lookahead_id.get() as usize + 1);
         Ok(())
     }
 
@@ -12217,9 +12292,7 @@ fn runtime_weavy_subtree_tree_event_indices(
     {
         for index in indices {
             let event = &reuse_index.tree_events[*index];
-            if runtime_weavy_tree_event_byte_range(event)
-                .is_some_and(|(_, end)| end <= end_byte)
-            {
+            if runtime_weavy_tree_event_byte_range(event).is_some_and(|(_, end)| end <= end_byte) {
                 event_indices.push(*index);
                 if let Some(node) = runtime_weavy_tree_event_node(event) {
                     nodes.insert(node);
@@ -12696,8 +12769,6 @@ impl RuntimeWeavyTreeStore {
     fn materialize_node(&self, id: parser_ir::TreeNodeId) -> SexpNode {
         self.materialize_node_with_kind(id, None)
     }
-
-
 
     fn materialize_node_with_kind(
         &self,
