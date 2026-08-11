@@ -2878,6 +2878,32 @@ impl ParseTable {
     pub fn from_grammar(grammar: &ParserGrammar) -> Result<Self, ParserTableBuildError> {
         LrTableBuilder::new(grammar)?.build()
     }
+    /// Clone only runtime-consumed table facts, omitting LR item sets and transitions.
+    ///
+    /// This is intended for precompiled artifacts: parser execution consumes state
+    /// rows, lexical modes, scanner masks, and conflicts, while item sets and the
+    /// transition graph exist only to construct those rows.
+    #[must_use]
+    pub fn runtime_clone(&self) -> Self {
+        Self {
+            item_sets: Vec::new(),
+            transitions: Vec::new(),
+            lexical_modes: self.lexical_modes.clone(),
+            valid_symbol_sets: self.valid_symbol_sets.clone(),
+            conflicts: self.conflicts.clone(),
+            states: self
+                .states
+                .iter()
+                .map(|state| ParseState {
+                    id: state.id,
+                    item_set: ItemSetId::from_index(0),
+                    entries: state.entries.clone(),
+                    gotos: state.gotos.clone(),
+                    lex_mode: state.lex_mode,
+                })
+                .collect(),
+        }
+    }
 
     /// LR item sets.
     pub fn item_sets(&self) -> &[ItemSet] {

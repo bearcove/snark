@@ -17,6 +17,7 @@ mod lex_match;
 pub mod lexical;
 pub mod lower;
 pub mod manifest;
+pub mod module;
 pub mod parser;
 pub mod query;
 pub mod runtime_input;

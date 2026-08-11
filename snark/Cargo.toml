@@ -41,6 +41,8 @@ regex.workspace = true
 regex-automata.workspace = true
 smallvec.workspace = true
 weavy.workspace = true
+weavy-phon.workspace = true
+phon.workspace = true
 
 [dev-dependencies]
 facet-styx.workspace = true
@@ -63,6 +65,10 @@ required-features = ["json-import"]
 
 [[example]]
 name = "pipeline_timing"
+required-features = ["json-import"]
+
+[[example]]
+name = "artifact_timing"
 required-features = ["json-import"]
 
 [[example]]

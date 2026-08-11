@@ -41,11 +41,19 @@ smallvec = { version = "1.15", default-features = false }
 unicode-width = "0.2.2"
 wasm-bindgen = "0.2"
 weavy = { git = "https://github.com/bearcove/weavy", rev = "743a7abe8f999ab4122df1cc02e2441849210a23" }
+weavy-phon = { path = "../weavy/weavy-phon" }
+phon = { path = "../phon/rust/phon" }
 
 [patch.crates-io]
 copypatch = { git = "https://github.com/bearcove/weavy", rev = "743a7abe8f999ab4122df1cc02e2441849210a23" }
 taxon = { git = "https://github.com/bearcove/weavy", rev = "743a7abe8f999ab4122df1cc02e2441849210a23" }
 weavy = { git = "https://github.com/bearcove/weavy", rev = "743a7abe8f999ab4122df1cc02e2441849210a23" }
+weavy-phon = { path = "../weavy/weavy-phon" }
+
+[patch."https://github.com/bearcove/weavy"]
+copypatch = { path = "../weavy/copypatch" }
+taxon = { path = "../weavy/taxon" }
+weavy = { path = "../weavy/weavy" }
 
 
 [workspace.lints.rust]

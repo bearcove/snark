@@ -2660,6 +2660,7 @@ fn diagnostic_span(input: &str, byte: usize) -> Option<DiagnosticSpan> {
     let diagnostics = MarginDiagnostics {
         sources: vec![source],
         reports: vec![Report {
+            code: None,
             severity: Severity::Error,
             title: "parse diagnostic".to_owned(),
             annotations: vec![Annotation {

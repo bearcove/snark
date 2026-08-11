@@ -6,10 +6,6 @@ use std::{fs, io, path::Path};
 
 use facet::Facet;
 
-use crate::{
-    lower::weavy::{WeavyParsePlan, WeavyParsePlanData},
-    parser::{ParseTable, ParserGrammar},
-};
 #[cfg(feature = "json-import")]
 use crate::{
     grammar::RawGrammarJson,
@@ -17,6 +13,10 @@ use crate::{
     lower::weavy::WeavyParseError,
     parser::{ParserNormalizeError, ParserPrepareError, ParserTableBuildError},
     validated::{GrammarValidationError, ValidatedGrammar},
+};
+use crate::{
+    lower::weavy::{WeavyParsePlan, WeavyParsePlanData},
+    parser::{ParseTable, ParserGrammar},
 };
 
 const ARTIFACT_MAGIC: [u8; 8] = *b"SNARKPAR";
@@ -36,7 +36,9 @@ pub type GrammarFingerprint = [u8; 32];
 #[cfg(feature = "json-import")]
 pub fn grammar_fingerprint(grammar_json: &str) -> GrammarFingerprint {
     match RawGrammarJson::from_tree_sitter_json_str(grammar_json) {
-        Ok(raw) => fingerprint_raw_grammar(&raw).unwrap_or_else(|_| fallback_fingerprint(grammar_json)),
+        Ok(raw) => {
+            fingerprint_raw_grammar(&raw).unwrap_or_else(|_| fallback_fingerprint(grammar_json))
+        }
         Err(_) => fallback_fingerprint(grammar_json),
     }
 }
@@ -78,10 +80,11 @@ pub struct ParserArtifactBuilder {
 impl ParserArtifactBuilder {
     /// Compile a Tree-sitter-compatible grammar JSON document into runtime parser data.
     pub fn from_grammar_json(grammar_json: &str) -> Result<Self, ArtifactBuildError> {
-        let raw = RawGrammarJson::from_tree_sitter_json_str(grammar_json)
-            .map_err(|source| ArtifactBuildError::new(ArtifactBuildErrorKind::Import {
+        let raw = RawGrammarJson::from_tree_sitter_json_str(grammar_json).map_err(|source| {
+            ArtifactBuildError::new(ArtifactBuildErrorKind::Import {
                 message: source.to_string(),
-            }))?;
+            })
+        })?;
         let grammar_fingerprint = fingerprint_raw_grammar(&raw)?;
         let validated = ValidatedGrammar::from_raw(&raw).map_err(ArtifactBuildError::validation)?;
         let lexical = LexicalFacts::from_grammar(&validated);
@@ -89,8 +92,8 @@ impl ParserArtifactBuilder {
             .map_err(ArtifactBuildError::normalize)?
             .prepare_productions_for_items()
             .map_err(ArtifactBuildError::prepare)?;
-        let parse_table = ParseTable::from_grammar(&parser_grammar)
-            .map_err(ArtifactBuildError::table)?;
+        let parse_table =
+            ParseTable::from_grammar(&parser_grammar).map_err(ArtifactBuildError::table)?;
         let plan = WeavyParsePlan::new(&validated, &parser_grammar, &parse_table)
             .map_err(ArtifactBuildError::plan)?;
         Ok(Self {
@@ -126,7 +129,7 @@ impl ParserArtifactBuilder {
         let payload = ArtifactPayload {
             compiler_version: ARTIFACT_COMPILER_VERSION.to_owned(),
             parser_grammar: self.parser_grammar.clone(),
-            parse_table: self.parse_table.clone(),
+            parse_table: self.parse_table.runtime_clone(),
             weavy_plan: self.plan.artifact_data(),
         };
         let payload = facet_postcard::to_vec(&payload).map_err(|source| {
@@ -214,11 +217,12 @@ impl ParserArtifact {
                 },
             ));
         }
-        let payload: ArtifactPayload = facet_postcard::from_slice(header.payload).map_err(|source| {
-            ArtifactLoadError::new(ArtifactLoadErrorKind::Decode {
-                message: source.to_string(),
-            })
-        })?;
+        let payload: ArtifactPayload =
+            facet_postcard::from_slice(header.payload).map_err(|source| {
+                ArtifactLoadError::new(ArtifactLoadErrorKind::Decode {
+                    message: source.to_string(),
+                })
+            })?;
         if payload.compiler_version != ARTIFACT_COMPILER_VERSION {
             return Err(ArtifactLoadError::new(
                 ArtifactLoadErrorKind::CompilerVersionMismatch {
@@ -322,12 +326,15 @@ impl<'a> ArtifactHeader<'a> {
         if bytes[..8] != ARTIFACT_MAGIC {
             let mut actual = [0; 8];
             actual.copy_from_slice(&bytes[..8]);
-            return Err(ArtifactLoadError::new(ArtifactLoadErrorKind::InvalidMagic {
-                expected: ARTIFACT_MAGIC,
-                actual,
-            }));
+            return Err(ArtifactLoadError::new(
+                ArtifactLoadErrorKind::InvalidMagic {
+                    expected: ARTIFACT_MAGIC,
+                    actual,
+                },
+            ));
         }
-        let format_version = u32::from_le_bytes(bytes[8..12].try_into().expect("fixed header range"));
+        let format_version =
+            u32::from_le_bytes(bytes[8..12].try_into().expect("fixed header range"));
         let mut grammar_fingerprint = [0; 32];
         grammar_fingerprint.copy_from_slice(&bytes[12..44]);
         let mut checksum = [0; 32];
@@ -394,20 +401,37 @@ impl ArtifactBuildError {
 impl fmt::Display for ArtifactBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            ArtifactBuildErrorKind::Import { message } => write!(f, "grammar import failed: {message}"),
-            ArtifactBuildErrorKind::Validation { message } => write!(f, "grammar validation failed: {message}"),
-            ArtifactBuildErrorKind::Normalize { message } => write!(f, "parser normalization failed: {message}"),
-            ArtifactBuildErrorKind::Prepare { message } => write!(f, "parser preparation failed: {message}"),
-            ArtifactBuildErrorKind::Table { message } => write!(f, "parse-table construction failed: {message}"),
-            ArtifactBuildErrorKind::Plan { message } => write!(f, "Weavy plan construction failed: {message}"),
-            ArtifactBuildErrorKind::Encode { message } => write!(f, "artifact encoding failed: {message}"),
-            ArtifactBuildErrorKind::Write { path, message } => write!(f, "could not write artifact {path}: {message}"),
+            ArtifactBuildErrorKind::Import { message } => {
+                write!(f, "grammar import failed: {message}")
+            }
+            ArtifactBuildErrorKind::Validation { message } => {
+                write!(f, "grammar validation failed: {message}")
+            }
+            ArtifactBuildErrorKind::Normalize { message } => {
+                write!(f, "parser normalization failed: {message}")
+            }
+            ArtifactBuildErrorKind::Prepare { message } => {
+                write!(f, "parser preparation failed: {message}")
+            }
+            ArtifactBuildErrorKind::Table { message } => {
+                write!(f, "parse-table construction failed: {message}")
+            }
+            ArtifactBuildErrorKind::Plan { message } => {
+                write!(f, "Weavy plan construction failed: {message}")
+            }
+            ArtifactBuildErrorKind::Encode { message } => {
+                write!(f, "artifact encoding failed: {message}")
+            }
+            ArtifactBuildErrorKind::Write { path, message } => {
+                write!(f, "could not write artifact {path}: {message}")
+            }
         }
     }
 }
 
 #[cfg(feature = "json-import")]
 impl Error for ArtifactBuildError {}
+/// Build-time artifact error category.
 #[cfg(feature = "json-import")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -476,15 +500,37 @@ impl ArtifactLoadError {
 impl fmt::Display for ArtifactLoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            ArtifactLoadErrorKind::Truncated { minimum, actual } => write!(f, "artifact is truncated: expected at least {minimum} bytes, found {actual}"),
-            ArtifactLoadErrorKind::InvalidMagic { .. } => write!(f, "artifact magic does not match Snark parser artifacts"),
-            ArtifactLoadErrorKind::UnsupportedFormatVersion { expected, actual } => write!(f, "artifact format version {actual} is unsupported; expected {expected}"),
-            ArtifactLoadErrorKind::GrammarFingerprintMismatch { .. } => write!(f, "artifact grammar fingerprint does not match the expected grammar"),
-            ArtifactLoadErrorKind::ChecksumMismatch { .. } => write!(f, "artifact payload checksum mismatch"),
-            ArtifactLoadErrorKind::Decode { message } => write!(f, "artifact payload decode failed: {message}"),
-            ArtifactLoadErrorKind::CompilerVersionMismatch { expected, actual } => write!(f, "artifact compiler version {actual} does not match runtime {expected}"),
-            ArtifactLoadErrorKind::InvalidData { message } => write!(f, "artifact payload is structurally invalid: {message}"),
-            ArtifactLoadErrorKind::Plan { message } => write!(f, "artifact Weavy plan materialization failed: {message}"),
+            ArtifactLoadErrorKind::Truncated { minimum, actual } => write!(
+                f,
+                "artifact is truncated: expected at least {minimum} bytes, found {actual}"
+            ),
+            ArtifactLoadErrorKind::InvalidMagic { .. } => {
+                write!(f, "artifact magic does not match Snark parser artifacts")
+            }
+            ArtifactLoadErrorKind::UnsupportedFormatVersion { expected, actual } => write!(
+                f,
+                "artifact format version {actual} is unsupported; expected {expected}"
+            ),
+            ArtifactLoadErrorKind::GrammarFingerprintMismatch { .. } => write!(
+                f,
+                "artifact grammar fingerprint does not match the expected grammar"
+            ),
+            ArtifactLoadErrorKind::ChecksumMismatch { .. } => {
+                write!(f, "artifact payload checksum mismatch")
+            }
+            ArtifactLoadErrorKind::Decode { message } => {
+                write!(f, "artifact payload decode failed: {message}")
+            }
+            ArtifactLoadErrorKind::CompilerVersionMismatch { expected, actual } => write!(
+                f,
+                "artifact compiler version {actual} does not match runtime {expected}"
+            ),
+            ArtifactLoadErrorKind::InvalidData { message } => {
+                write!(f, "artifact payload is structurally invalid: {message}")
+            }
+            ArtifactLoadErrorKind::Plan { message } => {
+                write!(f, "artifact Weavy plan materialization failed: {message}")
+            }
         }
     }
 }

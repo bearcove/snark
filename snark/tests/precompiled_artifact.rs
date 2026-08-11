@@ -33,6 +33,14 @@ fn precompiled_artifact_round_trips_and_matches_live_parse_behavior() {
     )
     .unwrap();
 
+    let runtime_table = built.parse_table().runtime_clone();
+    assert!(runtime_table.item_sets().is_empty());
+    assert!(runtime_table.transitions().is_empty());
+    assert_eq!(
+        runtime_table.states().len(),
+        built.parse_table().states().len()
+    );
+
     let bytes = built.encode().unwrap();
     let loaded = ParserArtifact::load(&bytes, built.grammar_fingerprint()).unwrap();
     let loaded_tree = parse_prepared_weavy_tree(
@@ -44,9 +52,14 @@ fn precompiled_artifact_round_trips_and_matches_live_parse_behavior() {
     .unwrap();
 
     assert_eq!(loaded.parser_grammar(), built.parser_grammar());
-    assert_eq!(loaded.parse_table(), built.parse_table());
+    assert!(loaded.parse_table().item_sets().is_empty());
+    assert!(loaded.parse_table().transitions().is_empty());
+    assert_eq!(loaded.parse_table().states(), runtime_table.states());
     assert_eq!(loaded_tree, live_tree);
-    assert_eq!(loaded.grammar_fingerprint(), grammar_fingerprint(FIXTURE_GRAMMAR));
+    assert_eq!(
+        loaded.grammar_fingerprint(),
+        grammar_fingerprint(FIXTURE_GRAMMAR)
+    );
 }
 
 #[test]
@@ -88,8 +101,7 @@ fn artifact_load_rejects_fingerprint_mismatch_and_corruption() {
     let corrupt = ParserArtifact::load(&bytes, built.grammar_fingerprint()).unwrap_err();
     assert!(matches!(
         corrupt.kind(),
-        ArtifactLoadErrorKind::ChecksumMismatch { .. }
-            | ArtifactLoadErrorKind::Decode { .. }
+        ArtifactLoadErrorKind::ChecksumMismatch { .. } | ArtifactLoadErrorKind::Decode { .. }
     ));
 }
 

@@ -1833,7 +1833,8 @@ pub fn empty_lowered() -> SnarkWeavyLowered {
 }
 
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
-pub(crate) struct WeavyParsePlanData {
+/// Serializable runtime-only parser and lexer plan data.
+pub struct WeavyParsePlanData {
     parser_program: WeavyParserProgramData,
     lexer_program: WeavyLexerProgramData,
 }
@@ -1856,8 +1857,15 @@ struct WeavyParserActionBlockData {
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
 #[repr(u8)]
 enum WeavyOpData {
-    CallBlock { block: usize, base_offset: usize },
-    CallBlockThen { block: usize, then: usize, base_offset: usize },
+    CallBlock {
+        block: usize,
+        base_offset: usize,
+    },
+    CallBlockThen {
+        block: usize,
+        then: usize,
+        base_offset: usize,
+    },
     Return,
     Intrinsic(SnarkIntrinsic),
 }
@@ -1971,7 +1979,12 @@ impl WeavyParserProgram {
     #[cfg(feature = "json-import")]
     pub(crate) fn artifact_data(&self) -> WeavyParserProgramData {
         WeavyParserProgramData {
-            root: self.dense.program.iter().map(WeavyOpData::from_runtime).collect(),
+            root: self
+                .dense
+                .program
+                .iter()
+                .map(WeavyOpData::from_runtime)
+                .collect(),
             blocks: self
                 .dense
                 .blocks
@@ -2131,7 +2144,9 @@ fn dense_to_symbolic_lowered(
             WeavyOp::Control(ControlOp::CallBlock { block, base_offset }) => {
                 WeavyOp::Control(ControlOp::CallBlock {
                     block: *block_ids.get(block.index()).ok_or(
-                        WeavyParseError::MissingDenseRuntimeBlock { block: block.index() },
+                        WeavyParseError::MissingDenseRuntimeBlock {
+                            block: block.index(),
+                        },
                     )?,
                     base_offset: *base_offset,
                 })
@@ -2142,10 +2157,14 @@ fn dense_to_symbolic_lowered(
                 base_offset,
             }) => WeavyOp::Control(ControlOp::CallBlockThen {
                 block: *block_ids.get(block.index()).ok_or(
-                    WeavyParseError::MissingDenseRuntimeBlock { block: block.index() },
+                    WeavyParseError::MissingDenseRuntimeBlock {
+                        block: block.index(),
+                    },
                 )?,
                 then: *block_ids.get(then.index()).ok_or(
-                    WeavyParseError::MissingDenseRuntimeBlock { block: then.index() },
+                    WeavyParseError::MissingDenseRuntimeBlock {
+                        block: then.index(),
+                    },
                 )?,
                 base_offset: *base_offset,
             }),
@@ -2167,7 +2186,10 @@ fn dense_to_symbolic_lowered(
             block.iter().map(map_op).collect::<Result<Vec<_>, _>>()?,
         );
     }
-    if state_blocks.iter().any(|block| block.get() as usize >= dense.blocks.len()) {
+    if state_blocks
+        .iter()
+        .any(|block| block.get() as usize >= dense.blocks.len())
+    {
         return Err(WeavyParseError::UnsupportedCanonicalOp);
     }
     Ok(lowered)
@@ -2479,15 +2501,16 @@ impl WeavyParsePlan {
         })
     }
 
-    #[cfg(feature = "json-import")]
-    pub(crate) fn artifact_data(&self) -> WeavyParsePlanData {
+    /// Extract runtime-only plan data for a durable module constant.
+    pub fn artifact_data(&self) -> WeavyParsePlanData {
         WeavyParsePlanData {
             parser_program: self.program.artifact_data(),
             lexer_program: self.lexer_program.artifact_data(),
         }
     }
 
-    pub(crate) fn from_artifact_data(
+    /// Reconstruct a runtime plan from admitted module constants.
+    pub fn from_artifact_data(
         data: WeavyParsePlanData,
         parser: &parser_ir::ParserGrammar,
         table: &parser_ir::ParseTable,
@@ -2523,6 +2546,16 @@ impl WeavyParsePlan {
     /// Lowered Weavy parser/action program.
     pub const fn program(&self) -> &WeavyParserProgram {
         &self.program
+    }
+
+    /// Unique regex specifications compiled for this plan.
+    pub fn unique_regex_count(&self) -> usize {
+        self.lexer_program.unique_regex_count
+    }
+
+    /// Regex engine compilations performed while constructing this plan.
+    pub fn regex_compile_count(&self) -> usize {
+        self.lexer_program.regex_compile_count
     }
 
     /// Parser and lexer analysis for optimizer/JIT planning.
@@ -3629,9 +3662,17 @@ enum WeavyTerminalMatcherData {
 enum WeavyLexExprData {
     Blank,
     String(String),
-    Pattern { source: String, flags: Option<String> },
-    Until { markers: Vec<String> },
-    Nested { open: String, close: String },
+    Pattern {
+        source: String,
+        flags: Option<String>,
+    },
+    Until {
+        markers: Vec<String>,
+    },
+    Nested {
+        open: String,
+        close: String,
+    },
     AutoClose(Box<WeavyAutoCloseSpec>),
     Seq(Vec<WeavyLexExprData>),
     Choice(Vec<WeavyLexExprData>),
@@ -3644,6 +3685,8 @@ enum WeavyLexExprData {
 struct WeavyLexerProgram {
     modes: Vec<WeavyLexModeProgram>,
     state_modes: Vec<WeavyLexModeProgram>,
+    unique_regex_count: usize,
+    regex_compile_count: usize,
 }
 
 impl WeavyLexerProgram {
@@ -3674,7 +3717,13 @@ impl WeavyLexerProgram {
                 )
             })
             .collect();
-        Self { modes, state_modes }
+        let unique_regex_count = compiler.regex_leaves.len();
+        Self {
+            modes,
+            state_modes,
+            unique_regex_count,
+            regex_compile_count: unique_regex_count,
+        }
     }
 
     fn runtime_state_mode(
@@ -3706,7 +3755,11 @@ impl WeavyLexerProgram {
     #[cfg(feature = "json-import")]
     fn artifact_data(&self) -> WeavyLexerProgramData {
         WeavyLexerProgramData {
-            modes: self.modes.iter().map(WeavyLexModeProgram::artifact_data).collect(),
+            modes: self
+                .modes
+                .iter()
+                .map(WeavyLexModeProgram::artifact_data)
+                .collect(),
             state_modes: self
                 .state_modes
                 .iter()
@@ -3717,17 +3770,22 @@ impl WeavyLexerProgram {
 
     fn from_artifact_data(data: WeavyLexerProgramData) -> Result<Self, WeavyParseError> {
         let mut compiler = WeavyLexerCompiler::default();
+        let modes = data
+            .modes
+            .into_iter()
+            .map(|mode| WeavyLexModeProgram::from_artifact_data(mode, &mut compiler))
+            .collect::<Result<Vec<_>, _>>()?;
+        let state_modes = data
+            .state_modes
+            .into_iter()
+            .map(|mode| WeavyLexModeProgram::from_artifact_data(mode, &mut compiler))
+            .collect::<Result<Vec<_>, _>>()?;
+        let unique_regex_count = compiler.regex_leaves.len();
         Ok(Self {
-            modes: data
-                .modes
-                .into_iter()
-                .map(|mode| WeavyLexModeProgram::from_artifact_data(mode, &mut compiler))
-                .collect::<Result<Vec<_>, _>>()?,
-            state_modes: data
-                .state_modes
-                .into_iter()
-                .map(|mode| WeavyLexModeProgram::from_artifact_data(mode, &mut compiler))
-                .collect::<Result<Vec<_>, _>>()?,
+            modes,
+            state_modes,
+            unique_regex_count,
+            regex_compile_count: unique_regex_count,
         })
     }
 }
@@ -4574,11 +4632,13 @@ impl WeavyLexTerminal {
         Ok(Self {
             terminal: data.terminal,
             matcher: WeavyTerminalMatcher::from_artifact_data(data.matcher, compiler)?,
-            lookahead: data.lookahead.map(|lookahead| RuntimeWeavyTerminalLookahead {
-                terminal: lookahead.terminal,
-                lookahead: lookahead.lookahead,
-                shifts_only_extra: lookahead.shifts_only_extra,
-            }),
+            lookahead: data
+                .lookahead
+                .map(|lookahead| RuntimeWeavyTerminalLookahead {
+                    terminal: lookahead.terminal,
+                    lookahead: lookahead.lookahead,
+                    shifts_only_extra: lookahead.shifts_only_extra,
+                }),
             immediate: data.immediate,
             literal: data.literal,
             lexical_precedence: data.lexical_precedence,
@@ -4622,7 +4682,9 @@ impl WeavyTerminalMatcher {
         match self {
             Self::Expr(expr) => WeavyTerminalMatcherData::Expr(expr.artifact_data()),
             Self::UnsupportedTerminal { terminal } => {
-                WeavyTerminalMatcherData::UnsupportedTerminal { terminal: *terminal }
+                WeavyTerminalMatcherData::UnsupportedTerminal {
+                    terminal: *terminal,
+                }
             }
         }
     }
@@ -4815,20 +4877,17 @@ impl WeavyLexExpr {
                 close: close.clone(),
             },
             Self::AutoClose(spec) => WeavyLexExprData::AutoClose(spec.clone()),
-            Self::Seq(members) => WeavyLexExprData::Seq(
-                members.iter().map(Self::artifact_data).collect(),
-            ),
-            Self::Choice(members) => WeavyLexExprData::Choice(
-                members.iter().map(Self::artifact_data).collect(),
-            ),
-            Self::Repeat(content) => {
-                WeavyLexExprData::Repeat(Box::new(content.artifact_data()))
+            Self::Seq(members) => {
+                WeavyLexExprData::Seq(members.iter().map(Self::artifact_data).collect())
             }
-            Self::Repeat1(content) => {
-                WeavyLexExprData::Repeat1(Box::new(content.artifact_data()))
+            Self::Choice(members) => {
+                WeavyLexExprData::Choice(members.iter().map(Self::artifact_data).collect())
             }
-            Self::CompositeRegex { original, .. }
-            | Self::CompositeChoice { original, .. } => original.artifact_data(),
+            Self::Repeat(content) => WeavyLexExprData::Repeat(Box::new(content.artifact_data())),
+            Self::Repeat1(content) => WeavyLexExprData::Repeat1(Box::new(content.artifact_data())),
+            Self::CompositeRegex { original, .. } | Self::CompositeChoice { original, .. } => {
+                original.artifact_data()
+            }
             Self::UnsupportedSymbol(expr) => WeavyLexExprData::UnsupportedSymbol(*expr),
         }
     }
@@ -4844,11 +4903,9 @@ impl WeavyLexExpr {
                 let pattern = crate::lex_match::compile_pattern(&source, flags.as_deref());
                 Self::Pattern(compiler.pattern_matcher(pattern))
             }
-            WeavyLexExprData::Until { markers } => {
-                Self::Until(WeavyUntilMatcher::from_compiled(
-                    crate::lex_match::compile_until_markers(&markers),
-                ))
-            }
+            WeavyLexExprData::Until { markers } => Self::Until(WeavyUntilMatcher::from_compiled(
+                crate::lex_match::compile_until_markers(&markers),
+            )),
             WeavyLexExprData::Nested { open, close } => Self::Nested { open, close },
             WeavyLexExprData::AutoClose(spec) => Self::AutoClose(spec),
             WeavyLexExprData::Seq(members) => Self::Seq(
@@ -11750,11 +11807,9 @@ impl<'a> RuntimeWeavyStepper<'a> {
             None => byte_position == 0,
         };
         let word = mode.word();
-        let reserved_context = mode.reserved_context().and_then(|context| {
-            self.parser
-                .reserved_contexts()
-                .get(context.get() as usize)
-        });
+        let reserved_context = mode
+            .reserved_context()
+            .and_then(|context| self.parser.reserved_contexts().get(context.get() as usize));
         let mut best_reserved = None::<RuntimeWeavyTokenCandidate>;
         let mut best = None::<RuntimeWeavyTokenCandidate>;
         let mut best_rejected = None::<RuntimeWeavyTokenCandidate>;
@@ -11798,15 +11853,16 @@ impl<'a> RuntimeWeavyStepper<'a> {
                         literal: terminal_row.literal,
                         lexical_precedence: terminal_row.lexical_precedence,
                         implicit_precedence: terminal_row.implicit_precedence,
-                        keyword: word
-                            .is_some_and(|word| word == terminal_row.terminal)
-                            .then_some(parser_ir::KeywordStatus::Word)
-                            .unwrap_or(parser_ir::KeywordStatus::Unchecked),
+                        keyword: if word.is_some_and(|word| word == terminal_row.terminal) {
+                            parser_ir::KeywordStatus::Word
+                        } else {
+                            parser_ir::KeywordStatus::Unchecked
+                        },
                         scanner: None,
                     };
-                    if reserved_context.is_some_and(|context| {
-                        context.entries().contains(&terminal_row.terminal)
-                    }) {
+                    if reserved_context
+                        .is_some_and(|context| context.entries().contains(&terminal_row.terminal))
+                    {
                         candidate.lookahead = parser_ir::LookaheadSymbol::ReservedWord {
                             terminal: terminal_row.terminal,
                             context: mode
@@ -14044,8 +14100,8 @@ mod tests {
             .expect("normalize reserved-word grammar")
             .prepare_productions_for_items()
             .expect("prepare reserved-word grammar");
-        let table = parser_ir::ParseTable::from_grammar(&parser)
-            .expect("build reserved-word parse table");
+        let table =
+            parser_ir::ParseTable::from_grammar(&parser).expect("build reserved-word parse table");
         let plan = WeavyParsePlan::new(&validated, &parser, &table)
             .expect("build reserved-word Weavy plan");
         (validated, parser, table, plan)
@@ -16320,6 +16376,8 @@ mod tests {
             lexer_program: WeavyLexerProgram {
                 modes: vec![],
                 state_modes: vec![],
+                unique_regex_count: 0,
+                regex_compile_count: 0,
             },
             resolved_cst_names: empty_resolved_cst_names(),
             auto_close_index: RuntimeWeavyAutoCloseIndex::default(),
@@ -16384,6 +16442,8 @@ mod tests {
             lexer_program: WeavyLexerProgram {
                 modes: vec![],
                 state_modes: vec![],
+                unique_regex_count: 0,
+                regex_compile_count: 0,
             },
             resolved_cst_names: empty_resolved_cst_names(),
             auto_close_index: RuntimeWeavyAutoCloseIndex::default(),
@@ -16663,6 +16723,8 @@ mod tests {
             lexer_program: WeavyLexerProgram {
                 modes: vec![],
                 state_modes: vec![],
+                unique_regex_count: 0,
+                regex_compile_count: 0,
             },
             resolved_cst_names: empty_resolved_cst_names(),
             auto_close_index: RuntimeWeavyAutoCloseIndex::default(),
@@ -17194,6 +17256,8 @@ mod tests {
             lexer_program: WeavyLexerProgram {
                 modes: vec![],
                 state_modes: vec![],
+                unique_regex_count: 0,
+                regex_compile_count: 0,
             },
             resolved_cst_names: empty_resolved_cst_names(),
             auto_close_index: RuntimeWeavyAutoCloseIndex::default(),
@@ -17626,6 +17690,8 @@ mod tests {
             lexer_program: WeavyLexerProgram {
                 modes: vec![],
                 state_modes: vec![],
+                unique_regex_count: 0,
+                regex_compile_count: 0,
             },
             resolved_cst_names: empty_resolved_cst_names(),
             auto_close_index: RuntimeWeavyAutoCloseIndex::default(),
@@ -17696,6 +17762,8 @@ mod tests {
                     direct_pattern_set: None,
                 }],
                 state_modes: vec![],
+                unique_regex_count: 0,
+                regex_compile_count: 0,
             },
             resolved_cst_names: empty_resolved_cst_names(),
             auto_close_index: RuntimeWeavyAutoCloseIndex::default(),
@@ -17825,6 +17893,8 @@ mod tests {
                 direct_pattern_set,
             }],
             state_modes: vec![],
+            unique_regex_count: 1,
+            regex_compile_count: 1,
         }
     }
 

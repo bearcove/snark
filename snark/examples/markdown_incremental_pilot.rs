@@ -1,4 +1,8 @@
-use std::{env, hint::black_box, time::{Duration, Instant}};
+use std::{
+    env,
+    hint::black_box,
+    time::{Duration, Instant},
+};
 
 use snark::{
     grammar::RawGrammarJson,
@@ -28,17 +32,20 @@ impl PreparedParser {
         .expect("markdown pilot grammar emits");
         let raw = RawGrammarJson::from_tree_sitter_json_str(&grammar_json)
             .expect("markdown pilot grammar imports");
-        let validated =
-            ValidatedGrammar::from_raw(&raw).expect("markdown pilot grammar validates");
+        let validated = ValidatedGrammar::from_raw(&raw).expect("markdown pilot grammar validates");
         let lexical = LexicalFacts::from_grammar(&validated);
         let parser = ParserGrammar::normalize_from_validated(&validated, &lexical)
             .expect("markdown pilot grammar normalizes")
             .prepare_productions_for_items()
             .expect("markdown pilot grammar prepares productions");
         let table = ParseTable::from_grammar(&parser).expect("markdown pilot builds parse table");
-        let plan =
-            WeavyParsePlan::new(&validated, &parser, &table).expect("markdown pilot lowers to Weavy");
-        Self { parser, table, plan }
+        let plan = WeavyParsePlan::new(&validated, &parser, &table)
+            .expect("markdown pilot lowers to Weavy");
+        Self {
+            parser,
+            table,
+            plan,
+        }
     }
 
     fn full_parse(&self, input: &str) -> snark::lower::weavy::WeavyParseReport {
@@ -98,7 +105,10 @@ fn main() {
     assert_eq!(alpha.len(), bravo.len());
 
     let mut session = WeavyParseSession::new(&prepared.plan, &prepared.parser, &prepared.table);
-    let initial = session.parse(alpha.clone()).expect("initial parse succeeds").clone();
+    let initial = session
+        .parse(alpha.clone())
+        .expect("initial parse succeeds")
+        .clone();
     let edit = ParserInputEdit::new(edit_start, edit_start + 5, edit_start + 5);
     let incremental = session
         .reparse(edit, bravo.clone())
@@ -112,7 +122,10 @@ fn main() {
         .iter()
         .filter(|event| matches!(event, TreeEvent::ReuseNode { .. }))
         .count();
-    assert!(reused_nodes > 0, "incremental reparse must reuse accepted subtrees");
+    assert!(
+        reused_nodes > 0,
+        "incremental reparse must reuse accepted subtrees"
+    );
 
     for iteration in 0..32 {
         let input = if iteration % 2 == 0 { &alpha } else { &bravo };
@@ -155,7 +168,10 @@ fn main() {
     let speedup = full_elapsed.as_secs_f64() / incremental_elapsed.as_secs_f64();
     println!("grammar: JavaScript DSL -> Snark facts -> LR/GLR table -> Weavy plan");
     println!("document: {} bytes, {paragraphs} paragraphs", alpha.len());
-    println!("incremental execution lane: {:?}", incremental.execution_lane());
+    println!(
+        "incremental execution lane: {:?}",
+        incremental.execution_lane()
+    );
     println!(
         "JIT blocks: {} executed, {} fallback",
         incremental.hostcall_stats().executed_blocks,
