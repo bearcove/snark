@@ -559,6 +559,11 @@ impl SnarkModule {
         self.parse_table.conflicts().len()
     }
 
+    /// Number of parser fact reads routed through the runtime abstraction.
+    pub fn runtime_facts_read_count(&self) -> usize {
+        crate::lower::weavy::runtime_fact_read_count()
+    }
+
     /// Parse input with skip-invalid recovery using runtime facts owned by this module.
     pub fn parse_recovering(
         &self,

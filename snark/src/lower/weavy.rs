@@ -6678,10 +6678,7 @@ trait RuntimeParserFacts {
         &self,
         set: parser_ir::ValidSymbolSetId,
     ) -> Option<&parser_ir::ValidSymbolSet>;
-    fn production(
-        &self,
-        production: parser_ir::ProductionId,
-    ) -> Option<&parser_ir::Production>;
+    fn production(&self, production: parser_ir::ProductionId) -> Option<&parser_ir::Production>;
     fn production_metadata(
         &self,
         metadata: parser_ir::ProductionMetadataId,
@@ -6743,7 +6740,10 @@ impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
         external: parser_ir::ExternalId,
     ) -> Option<&parser_ir::ExternalSymbol> {
         Self::record_read();
-        self.parser.symbols().externals().get(external.get() as usize)
+        self.parser
+            .symbols()
+            .externals()
+            .get(external.get() as usize)
     }
 
     fn valid_symbol_set(
@@ -6754,10 +6754,7 @@ impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
         self.table.valid_symbol_sets().get(set.get() as usize)
     }
 
-    fn production(
-        &self,
-        production: parser_ir::ProductionId,
-    ) -> Option<&parser_ir::Production> {
+    fn production(&self, production: parser_ir::ProductionId) -> Option<&parser_ir::Production> {
         Self::record_read();
         self.parser.productions().get(production.get() as usize)
     }
@@ -6767,7 +6764,9 @@ impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
         metadata: parser_ir::ProductionMetadataId,
     ) -> Option<&parser_ir::ProductionMetadata> {
         Self::record_read();
-        self.parser.production_metadata().get(metadata.get() as usize)
+        self.parser
+            .production_metadata()
+            .get(metadata.get() as usize)
     }
 }
 
@@ -11291,6 +11290,7 @@ struct RuntimeWeavyStepper<'a> {
     plan: &'a WeavyParserProgram,
     parser: &'a parser_ir::ParserGrammar,
     table: &'a parser_ir::ParseTable,
+    facts: OwnedRuntimeParserFacts<'a>,
     lexer_program: &'a WeavyLexerProgram,
     auto_close_index: &'a RuntimeWeavyAutoCloseIndex,
     input: &'a str,
@@ -11333,6 +11333,11 @@ impl<'a> RuntimeWeavyStepper<'a> {
             parser: stepper_input.input.parser,
             table: stepper_input.input.table,
             lexer_program: stepper_input.input.lexer_program,
+            facts: OwnedRuntimeParserFacts {
+                parser: stepper_input.input.parser,
+                table: stepper_input.input.table,
+                program: &stepper_input.input.plan.program,
+            },
             auto_close_index: stepper_input.input.auto_close_index,
             input: stepper_input.input.input,
             input_points: stepper_input.input_points,
@@ -11373,6 +11378,11 @@ impl<'a> RuntimeWeavyStepper<'a> {
             parser: stepper_input.input.parser,
             table: stepper_input.input.table,
             lexer_program: stepper_input.input.lexer_program,
+            facts: OwnedRuntimeParserFacts {
+                parser: stepper_input.input.parser,
+                table: stepper_input.input.table,
+                program: &stepper_input.input.plan.program,
+            },
             auto_close_index: stepper_input.input.auto_close_index,
             input: stepper_input.input.input,
             input_points: stepper_input.input_points,
@@ -11415,7 +11425,9 @@ impl<'a> RuntimeWeavyStepper<'a> {
             (self.lex(state_row, self.byte_position)?, true)
         };
         let valid_symbols = if let parser_ir::LookaheadSymbol::External(_) = token.lookahead {
-            self.table.lexical_modes()[mode_id.get() as usize].valid_symbols()
+            self.facts
+                .lex_mode(mode_id)
+                .and_then(parser_ir::LexMode::valid_symbols)
         } else {
             None
         };
@@ -11442,7 +11454,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
         self.lookahead = Some(token);
         self.snark_stats.record_keys(SNARK_DISPATCH_ACTIONS_KEYS);
         let action_entry =
-            if let Some(action_entry) = self.plan.action_entry(state, token.lookahead) {
+            if let Some(action_entry) = self.facts.action_entry(state, token.lookahead) {
                 action_entry
             } else {
                 self.parse_state(state)?;
@@ -11749,7 +11761,9 @@ impl<'a> RuntimeWeavyStepper<'a> {
                 let token = self.lex(state_row, self.byte_position)?;
                 let valid_symbols = if let parser_ir::LookaheadSymbol::External(_) = token.lookahead
                 {
-                    self.table.lexical_modes()[mode_id.get() as usize].valid_symbols()
+                    self.facts
+                        .lex_mode(mode_id)
+                        .and_then(parser_ir::LexMode::valid_symbols)
                 } else {
                     None
                 };
@@ -11785,7 +11799,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
                     expected: RuntimeWeavyExpected::Empty,
                 })?;
                 let action_entry =
-                    if let Some(action_entry) = self.plan.action_entry(state, token.lookahead) {
+                    if let Some(action_entry) = self.facts.action_entry(state, token.lookahead) {
                         action_entry
                     } else {
                         self.parse_state(state)?;
@@ -11889,9 +11903,8 @@ impl<'a> RuntimeWeavyStepper<'a> {
         &self,
         state: parser_ir::ParseStateId,
     ) -> Result<&parser_ir::ParseState, RuntimeWeavyStepError> {
-        self.table
-            .states()
-            .get(state.get() as usize)
+        self.facts
+            .parse_state(state)
             .ok_or(RuntimeWeavyStepError::MissingState { state })
     }
 
@@ -11913,13 +11926,12 @@ impl<'a> RuntimeWeavyStepper<'a> {
                 scanner: None,
             });
         }
-        let mode = self
-            .table
-            .lexical_modes()
-            .get(state.lex_mode().get() as usize)
-            .ok_or(RuntimeWeavyStepError::MissingLexMode {
-                mode: state.lex_mode(),
-            })?;
+        let mode =
+            self.facts
+                .lex_mode(state.lex_mode())
+                .ok_or(RuntimeWeavyStepError::MissingLexMode {
+                    mode: state.lex_mode(),
+                })?;
         let mode_program = self
             .lexer_program
             .runtime_state_mode(state.id(), mode.id())?;
@@ -11936,7 +11948,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
         let word = mode.word();
         let reserved_context = mode
             .reserved_context()
-            .and_then(|context| self.parser.reserved_contexts().get(context.get() as usize));
+            .and_then(|context| self.facts.reserved_context(context));
         let mut best_reserved = None::<RuntimeWeavyTokenCandidate>;
         let mut best = None::<RuntimeWeavyTokenCandidate>;
         let mut best_rejected = None::<RuntimeWeavyTokenCandidate>;
@@ -12150,13 +12162,12 @@ impl<'a> RuntimeWeavyStepper<'a> {
         let Some(open_tag) = self.auto_close_stack.last() else {
             return Ok(None);
         };
-        let mode = self
-            .table
-            .lexical_modes()
-            .get(state.lex_mode().get() as usize)
-            .ok_or(RuntimeWeavyStepError::MissingLexMode {
-                mode: state.lex_mode(),
-            })?;
+        let mode =
+            self.facts
+                .lex_mode(state.lex_mode())
+                .ok_or(RuntimeWeavyStepError::MissingLexMode {
+                    mode: state.lex_mode(),
+                })?;
         let mode_program = self
             .lexer_program
             .runtime_state_mode(state.id(), mode.id())?;
@@ -12323,10 +12334,13 @@ impl<'a> RuntimeWeavyStepper<'a> {
                 external_count: mode.externals().len(),
             });
         };
-        let external_row = &self.parser.symbols().externals()[external.get() as usize];
+        let external_row = self
+            .facts
+            .external_symbol(external)
+            .ok_or(RuntimeWeavyStepError::UnsupportedCanonicalOp)?;
         let valid_symbols = mode
             .valid_symbols()
-            .map(|valid_symbols| &self.table.valid_symbol_sets()[valid_symbols.get() as usize]);
+            .and_then(|valid_symbols| self.facts.valid_symbol_set(valid_symbols));
         scanner
             .scan(ExternalScanRequest::new(
                 state.id(),
@@ -12356,8 +12370,14 @@ impl<'a> RuntimeWeavyStepper<'a> {
         child_count: usize,
         include_trailing_extras: bool,
     ) -> Result<RuntimeWeavyReduction, RuntimeWeavyStepError> {
-        let production_row = &self.parser.productions()[production.get() as usize];
-        let metadata_row = &self.parser.production_metadata()[metadata.get() as usize];
+        let production_row = self
+            .facts
+            .production(production)
+            .ok_or(RuntimeWeavyStepError::UnsupportedCanonicalOp)?;
+        let metadata_row = self
+            .facts
+            .production_metadata(metadata)
+            .ok_or(RuntimeWeavyStepError::UnsupportedCanonicalOp)?;
         let plan = self.plan;
         let version = self.version;
         let input_points = self.input_points;
@@ -12617,7 +12637,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
         state: parser_ir::ParseStateId,
         nonterminal: parser_ir::NonterminalId,
     ) -> Result<parser_ir::ParseStateId, RuntimeWeavyStepError> {
-        if let Some(goto) = self.plan.goto_state(state, nonterminal) {
+        if let Some(goto) = self.facts.goto_state(state, nonterminal) {
             return Ok(goto);
         }
         self.parse_state(state)?;
