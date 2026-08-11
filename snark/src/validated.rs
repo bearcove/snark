@@ -2,6 +2,7 @@
 
 use std::{error::Error, fmt};
 
+use facet::Facet;
 use indexmap::IndexMap;
 
 use crate::grammar::{
@@ -635,7 +636,7 @@ impl ValidationBuilder {
 }
 
 /// Grammar rule id in source order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RuleId(u32);
 
 impl RuleId {
@@ -655,7 +656,7 @@ impl RuleId {
 }
 
 /// External token id in `externals` order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ExternalTokenId(u32);
 
 impl ExternalTokenId {
@@ -675,7 +676,7 @@ impl ExternalTokenId {
 }
 
 /// External token ordinal in scanner valid-symbol masks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ExternalTokenOrdinal(u32);
 
 impl ExternalTokenOrdinal {
@@ -686,7 +687,7 @@ impl ExternalTokenOrdinal {
 }
 
 /// Field id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FieldId(u32);
 
 impl FieldId {
@@ -706,7 +707,7 @@ impl FieldId {
 }
 
 /// Alias id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AliasId(u32);
 
 impl AliasId {
@@ -726,7 +727,7 @@ impl AliasId {
 }
 
 /// Rule-expression arena id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GrammarExprId(u32);
 
 impl GrammarExprId {
@@ -746,7 +747,7 @@ impl GrammarExprId {
 }
 
 /// Reserved-word context id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReservedSetId(u32);
 
 impl ReservedSetId {

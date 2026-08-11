@@ -21,12 +21,14 @@ homepage = "https://github.com/bearcove/snark"
 
 [workspace.dependencies]
 aho-corasick = "1.1.4"
+blake3 = "1.8.6"
 arborium-theme = "2.4.5"
 cc = "1.0.87"
 facet-styx = { git = "https://github.com/bearcove/styx", rev = "67bf0b6c8e724f90b498281667e0bbb5fd93225d" }
 gingembre-syntax = { git = "https://github.com/bearcove/dodeca", rev = "20131be7d72286b2c45a6e2d652c361892e84d47" }
 rediff = { git = "https://github.com/facet-rs/facet", rev = "5705fa6c51289bea49f5729c52dc5e23cedce4f8" }
 facet = { git = "https://github.com/facet-rs/facet", rev = "5705fa6c51289bea49f5729c52dc5e23cedce4f8" }
+facet-postcard = { git = "https://github.com/facet-rs/facet", rev = "5705fa6c51289bea49f5729c52dc5e23cedce4f8" }
 facet-json = { git = "https://github.com/facet-rs/facet", rev = "5705fa6c51289bea49f5729c52dc5e23cedce4f8" }
 indexmap = { version = "2.12.1", default-features = false }
 snark = { path = "snark", version = "0.0.1" }
@@ -50,3 +52,8 @@ weavy = { git = "https://github.com/bearcove/weavy", rev = "743a7abe8f999ab4122d
 
 [workspace.lints.clippy]
 disallowed_methods = "deny"
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = false

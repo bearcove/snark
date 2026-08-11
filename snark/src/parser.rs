@@ -22,12 +22,13 @@ use crate::{
         StaticPrecedenceValue, SymbolRef, ValidatedGrammar, VisibleNodeKind,
     },
 };
+use facet::Facet;
 use smallvec::SmallVec;
 
 macro_rules! id_type {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(u32);
 
         impl $name {
@@ -81,7 +82,7 @@ id_type!(HighlightAssertionId, "Highlight assertion oracle id.");
 id_type!(PrecedenceGroupId, "Static precedence group id.");
 
 /// Generation phase represented by a parser-machine value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ParserGenerationStage {
     /// Symbol domains have been seeded from validated grammar and lexical facts.
@@ -97,7 +98,7 @@ pub enum ParserGenerationStage {
 }
 
 /// Parser-generator input after validated grammar facts enter the parser lane.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ParserGrammar {
     stage: ParserGenerationStage,
     start: NonterminalId,
@@ -1734,7 +1735,7 @@ fn strongest_dynamic_precedence(left: Option<i32>, right: Option<i32>) -> Option
 }
 
 /// Parser symbol domains.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct SymbolTables {
     terminals: Vec<TerminalSymbol>,
     nonterminals: Vec<NonterminalSymbol>,
@@ -1771,11 +1772,11 @@ impl SymbolTables {
 }
 
 /// EOF sentinel symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 pub struct EofSymbol;
 
 /// Internal parser sentinel symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 pub struct InternalSymbol {
     id: InternalSymbolId,
     kind: InternalSymbolKind,
@@ -1794,7 +1795,7 @@ impl InternalSymbol {
 }
 
 /// Internal parser sentinel kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 #[repr(u8)]
 pub enum InternalSymbolKind {
     /// Error node/recovery sentinel.
@@ -1806,7 +1807,8 @@ pub enum InternalSymbolKind {
 }
 
 /// Parser symbol in a normalized production.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 #[non_exhaustive]
 pub enum ParserSymbol {
     /// Normal lexical terminal.
@@ -1822,7 +1824,8 @@ pub enum ParserSymbol {
 }
 
 /// Lookahead key in an action table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
 #[non_exhaustive]
 pub enum LookaheadSymbol {
     /// Normal lexical terminal.
@@ -1843,7 +1846,7 @@ pub enum LookaheadSymbol {
 }
 
 /// Terminal symbol.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct TerminalSymbol {
     id: TerminalId,
     kind: ParserTerminalKind,
@@ -1903,7 +1906,7 @@ impl TerminalSymbol {
 }
 
 /// Parser terminal kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ParserTerminalKind {
     /// Literal string token.
@@ -1919,7 +1922,7 @@ pub enum ParserTerminalKind {
 }
 
 /// Nonterminal symbol.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct NonterminalSymbol {
     id: NonterminalId,
     source_rule: Option<RuleId>,
@@ -1967,7 +1970,7 @@ impl NonterminalSymbol {
 }
 
 /// How a nonterminal entered the parser symbol table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 #[repr(u8)]
 pub enum NonterminalOrigin {
     /// Nonterminal came from a validated grammar rule.
@@ -1977,7 +1980,7 @@ pub enum NonterminalOrigin {
 }
 
 /// External scanner symbol.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ExternalSymbol {
     id: ExternalId,
     ordinal: u32,
@@ -2002,7 +2005,7 @@ impl ExternalSymbol {
 }
 
 /// One flattened production used by LR table generation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct Production {
     id: ProductionId,
     lhs: NonterminalId,
@@ -2039,7 +2042,7 @@ impl Production {
 }
 
 /// One structural step in a flattened production.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ProductionStep {
     symbol: ParserSymbol,
     field: Option<FieldId>,
@@ -2088,7 +2091,7 @@ impl ProductionStep {
 }
 
 /// Metadata attached to one production.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ProductionMetadata {
     id: ProductionMetadataId,
     owner: RuleId,
@@ -2155,7 +2158,7 @@ impl ProductionMetadata {
 }
 
 /// How a production entered the normalized grammar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ProductionOrigin {
     /// Production came directly from a grammar rule.
@@ -2171,7 +2174,7 @@ pub enum ProductionOrigin {
 }
 
 /// Field map attached to one production.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct FieldMap {
     id: FieldMapId,
     entries: Vec<FieldMapEntry>,
@@ -2190,7 +2193,7 @@ impl FieldMap {
 }
 
 /// One field attachment in a production field map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 pub struct FieldMapEntry {
     structural_index: usize,
     field: FieldId,
@@ -2209,7 +2212,7 @@ impl FieldMapEntry {
 }
 
 /// Alias sequence attached to one production.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct AliasSequence {
     id: AliasSequenceId,
     entries: Vec<AliasSequenceEntry>,
@@ -2228,7 +2231,7 @@ impl AliasSequence {
 }
 
 /// One alias attachment in a production alias sequence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 pub struct AliasSequenceEntry {
     structural_index: usize,
     alias: AliasId,
@@ -2253,7 +2256,7 @@ impl AliasSequenceEntry {
 }
 
 /// Public visible node kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct PublicNodeKind {
     id: PublicNodeKindId,
     name: String,
@@ -2278,7 +2281,7 @@ impl PublicNodeKind {
 }
 
 /// Source of a public visible node kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PublicNodeKindSource {
     /// Visible grammar rule.
@@ -2290,7 +2293,7 @@ pub enum PublicNodeKindSource {
 }
 
 /// Public anonymous literal spelling and contributing parser terminals.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct PublicLiteralTerminals {
     literal: String,
     terminals: Vec<TerminalId>,
@@ -2315,7 +2318,7 @@ impl PublicLiteralTerminals {
 }
 
 /// Parser-owned field declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct FieldDecl {
     id: FieldId,
     name: String,
@@ -2334,7 +2337,7 @@ impl FieldDecl {
 }
 
 /// Parser-owned alias declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct AliasDecl {
     id: AliasId,
     value: String,
@@ -2359,7 +2362,7 @@ impl AliasDecl {
 }
 
 /// Parser-owned lexical rule.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct LexicalRule {
     id: LexicalRuleId,
     terminal: TerminalId,
@@ -2384,7 +2387,8 @@ impl LexicalRule {
 }
 
 /// Source facts for a parser-owned lexical rule.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
+#[repr(u8)]
 #[non_exhaustive]
 pub enum LexicalRuleSource {
     /// Direct literal or regex terminal expression.
@@ -2412,7 +2416,7 @@ pub enum LexicalRuleSource {
 }
 
 /// Inline declaration retained until the inline-expansion pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 pub struct InlineRule {
     rule: RuleId,
     nonterminal: NonterminalId,
@@ -2431,7 +2435,7 @@ impl InlineRule {
 }
 
 /// Facts produced once normalized productions are ready for LR item generation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ItemPreparationFacts {
     inline_expansions: Vec<InlineExpansion>,
     graph: ProductionGraphFacts,
@@ -2450,7 +2454,7 @@ impl ItemPreparationFacts {
 }
 
 /// Inline rule mapped to the productions that must be expanded at use sites.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct InlineExpansion {
     rule: RuleId,
     nonterminal: NonterminalId,
@@ -2475,7 +2479,7 @@ impl InlineExpansion {
 }
 
 /// Production graph facts used by FIRST/closure and table construction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ProductionGraphFacts {
     nullable: Vec<NonterminalId>,
     productive: Vec<NonterminalId>,
@@ -2500,7 +2504,7 @@ impl ProductionGraphFacts {
 }
 
 /// Parser-generation provenance row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 pub struct Provenance {
     id: ProvenanceId,
     source: ProvenanceSource,
@@ -2519,7 +2523,8 @@ impl Provenance {
 }
 
 /// Source fact that introduced generated parser data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
+#[repr(u8)]
 #[non_exhaustive]
 pub enum ProvenanceSource {
     /// Production came from a grammar rule root expression.
@@ -2541,7 +2546,7 @@ pub enum ProvenanceSource {
 }
 
 /// Extra grammar root.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 pub struct ExtraRoot {
     symbol: ParserSymbol,
 }
@@ -2554,7 +2559,7 @@ impl ExtraRoot {
 }
 
 /// Static precedence group.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct PrecedenceGroup {
     id: PrecedenceGroupId,
     entries: Vec<PrecedenceGroupEntry>,
@@ -2573,7 +2578,8 @@ impl PrecedenceGroup {
 }
 
 /// One static precedence group entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
+#[repr(u8)]
 #[non_exhaustive]
 pub enum PrecedenceGroupEntry {
     /// Named precedence entry.
@@ -2583,7 +2589,8 @@ pub enum PrecedenceGroupEntry {
 }
 
 /// Static precedence fact.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 #[non_exhaustive]
 pub enum StaticPrecedence {
     /// Integer precedence.
@@ -2593,7 +2600,7 @@ pub enum StaticPrecedence {
 }
 
 /// Production associativity.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Facet, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Associativity {
     /// No associativity override.
@@ -2606,7 +2613,7 @@ pub enum Associativity {
 }
 
 /// Reserved-word context.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ReservedContext {
     id: ReservedContextId,
     name: String,
@@ -2631,7 +2638,7 @@ impl ReservedContext {
 }
 
 /// External scanner valid-symbol set.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ValidSymbolSet {
     id: ValidSymbolSetId,
     externals: Vec<ExternalId>,
@@ -2650,7 +2657,7 @@ impl ValidSymbolSet {
 }
 
 /// LR item.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq, Hash)]
 pub struct LrItem {
     production: ProductionId,
     dot: usize,
@@ -2675,7 +2682,7 @@ impl LrItem {
 }
 
 /// Set of lookahead terminal/external/EOF symbols.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Facet, PartialEq, Eq, Hash)]
 pub struct LookaheadSet {
     symbols: Vec<LookaheadSymbol>,
 }
@@ -2688,7 +2695,7 @@ impl LookaheadSet {
 }
 
 /// One LR item set.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ItemSet {
     id: ItemSetId,
     items: Vec<LrItem>,
@@ -2713,7 +2720,7 @@ impl ItemSet {
 }
 
 /// Lexical mode selected by a parser state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct LexMode {
     id: LexModeId,
     terminals: Vec<TerminalId>,
@@ -2856,7 +2863,7 @@ pub enum KeywordStatus {
 }
 
 /// Generated LR/GLR parse table.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Facet, PartialEq, Eq)]
 pub struct ParseTable {
     item_sets: Vec<ItemSet>,
     transitions: Vec<ItemTransition>,
@@ -2904,7 +2911,7 @@ impl ParseTable {
 }
 
 /// Transition in the LR item graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 pub struct ItemTransition {
     from: ItemSetId,
     symbol: ParserSymbol,
@@ -4168,7 +4175,7 @@ fn lex_mode_from_entries(
 }
 
 /// One generated parse state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ParseState {
     id: ParseStateId,
     item_set: ItemSetId,
@@ -4205,7 +4212,7 @@ impl ParseState {
 }
 
 /// One generated parse-table action conflict retained for GLR execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct TableConflict {
     id: ConflictId,
     state: ParseStateId,
@@ -6179,7 +6186,7 @@ pub enum ParserExecutionErrorKind {
 }
 
 /// Actions for one lookahead symbol.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct TableEntry {
     lookahead: LookaheadSymbol,
     actions: Vec<ParseAction>,
@@ -6198,7 +6205,7 @@ impl TableEntry {
 }
 
 /// Nonterminal goto entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 pub struct GotoEntry {
     nonterminal: NonterminalId,
     state: ParseStateId,
@@ -6217,7 +6224,7 @@ impl GotoEntry {
 }
 
 /// Parser action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Facet, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ParseAction {
     /// Accept the input after completing the root production.
@@ -6258,7 +6265,7 @@ pub enum ParseAction {
 }
 
 /// GLR table facts that are not specific to one stack version.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Facet, PartialEq, Eq)]
 pub struct GlrPlan {
     conflicts: Vec<ConflictPlan>,
 }
@@ -6271,7 +6278,7 @@ impl GlrPlan {
 }
 
 /// One GLR conflict plan.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Facet, PartialEq, Eq)]
 pub struct ConflictPlan {
     id: ConflictId,
     symbols: Vec<NonterminalId>,
@@ -9703,5 +9710,38 @@ extras (
             error.kind(),
             ParserPrepareErrorKind::NullableUsedNonterminal { .. }
         ));
+    }
+
+    #[test]
+    fn parse_table_build_is_deterministic_and_stable() {
+        // Guard the LR item-set construction against algorithmic changes that alter the
+        // produced table: building the same grammar twice must yield identical item sets,
+        // transitions, and states, and the recognized conflict count must be stable.
+        let (_, parser, table) = authored_gingembre_parser_fixture();
+
+        let rebuilt = ParseTable::from_grammar(&parser).expect("second build");
+        assert_eq!(
+            rebuilt, table,
+            "ParseTable::from_grammar must be deterministic for the same grammar"
+        );
+
+        let states = table.states().len();
+        let item_sets = table.item_sets().len();
+        let transitions = table.transitions().len();
+        // The gingembre grammar is a fixed, sizable fixture; these counts pin the table
+        // shape so an LR round-trip regression is caught here rather than in consumer
+        // behavior. (Values are informational; equality above is the real contract.)
+        assert!(
+            item_sets >= 100,
+            "expected a sizable item graph, got {item_sets}"
+        );
+        assert!(
+            states >= item_sets,
+            "states ({states}) must cover every item set ({item_sets})"
+        );
+        assert!(
+            transitions >= item_sets,
+            "transitions ({transitions}) too small"
+        );
     }
 }

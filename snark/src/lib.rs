@@ -9,6 +9,7 @@
 //! grammar IR into Snark's Weavy dialect, checked against Tree-sitter's corpus
 //! and query test outputs.
 
+pub mod artifact;
 pub mod corpus;
 pub mod diagnostic;
 pub mod grammar;

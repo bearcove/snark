@@ -32,8 +32,10 @@ tree-sitter-import = ["json-import"]
 
 [dependencies]
 aho-corasick.workspace = true
+blake3.workspace = true
 facet = { workspace = true, features = ["indexmap"] }
 facet-json = { workspace = true, optional = true }
+facet-postcard.workspace = true
 indexmap.workspace = true
 regex.workspace = true
 regex-automata.workspace = true

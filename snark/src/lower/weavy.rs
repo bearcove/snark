@@ -39,6 +39,8 @@ use weavy::{
     },
 };
 
+use facet::Facet;
+
 use crate::{
     corpus::{SexpAtom, SexpChild, SexpNode, SexpValue},
     parser as parser_ir,
@@ -64,7 +66,7 @@ type RuntimeWeavyStateStack = SmallVec<[parser_ir::ParseStateId; 16]>;
 macro_rules! id_type {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Clone, Copy, Debug, Facet, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(u32);
 
         impl $name {
@@ -152,7 +154,8 @@ id_type!(ProductionMetadataId, "Snark production metadata identity.");
 id_type!(TreeNodeId, "Snark runtime tree-node identity.");
 
 /// A domain intrinsic emitted by Snark lowering.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+#[repr(u8)]
 #[non_exhaustive]
 pub enum SnarkIntrinsic {
     /// Read the next token according to a Snark lexical mode.
@@ -296,7 +299,7 @@ pub enum SnarkIntrinsic {
 }
 
 /// Why a GLR branch was retired by Snark lowering/runtime.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Facet, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BranchRetireReason {
     /// The branch accepted the input and left the live work queue.
@@ -1829,6 +1832,36 @@ pub fn empty_lowered() -> SnarkWeavyLowered {
     WeavyLowered::new(Vec::new())
 }
 
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+pub(crate) struct WeavyParsePlanData {
+    parser_program: WeavyParserProgramData,
+    lexer_program: WeavyLexerProgramData,
+}
+
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+pub(crate) struct WeavyParserProgramData {
+    root: Vec<WeavyOpData>,
+    blocks: Vec<Vec<WeavyOpData>>,
+    state_blocks: Vec<u32>,
+    state_block_refs: Vec<usize>,
+    action_blocks: Vec<Vec<Vec<WeavyParserActionBlockData>>>,
+}
+
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+struct WeavyParserActionBlockData {
+    action: parser_ir::ParseAction,
+    block_ref: usize,
+}
+
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+#[repr(u8)]
+enum WeavyOpData {
+    CallBlock { block: usize, base_offset: usize },
+    CallBlockThen { block: usize, then: usize, base_offset: usize },
+    Return,
+    Intrinsic(SnarkIntrinsic),
+}
+
 /// Lowered parser program plus dispatch metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WeavyParserProgram {
@@ -1934,6 +1967,208 @@ impl WeavyParserProgram {
                 block: block.index(),
             })
     }
+
+    pub(crate) fn artifact_data(&self) -> WeavyParserProgramData {
+        WeavyParserProgramData {
+            root: self.dense.program.iter().map(WeavyOpData::from_runtime).collect(),
+            blocks: self
+                .dense
+                .blocks
+                .iter()
+                .map(|block| block.iter().map(WeavyOpData::from_runtime).collect())
+                .collect(),
+            state_blocks: self.state_blocks.iter().map(|block| block.get()).collect(),
+            state_block_refs: self
+                .state_block_refs
+                .iter()
+                .map(|block| block.index())
+                .collect(),
+            action_blocks: self
+                .action_blocks
+                .iter()
+                .map(|rows| {
+                    rows.iter()
+                        .map(|blocks| {
+                            blocks
+                                .iter()
+                                .map(|block| WeavyParserActionBlockData {
+                                    action: block.action,
+                                    block_ref: block.block_ref.index(),
+                                })
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect(),
+        }
+    }
+
+    fn from_artifact_data(
+        data: WeavyParserProgramData,
+        parser: &parser_ir::ParserGrammar,
+        table: &parser_ir::ParseTable,
+    ) -> Result<Self, WeavyParseError> {
+        let dense = DenseSnarkWeavyLowered::new(
+            data.root
+                .into_iter()
+                .map(WeavyOpData::into_runtime)
+                .collect::<Result<Vec<_>, _>>()?,
+            data.blocks
+                .into_iter()
+                .map(|block| {
+                    block
+                        .into_iter()
+                        .map(WeavyOpData::into_runtime)
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        let state_blocks = data
+            .state_blocks
+            .into_iter()
+            .map(|block| SnarkBlockId::from_index(block as usize))
+            .collect::<Vec<_>>();
+        let lowered = dense_to_symbolic_lowered(&dense, &state_blocks)?;
+        let public_node_kind_names = parser
+            .public_node_kinds()
+            .iter()
+            .map(|kind| Arc::<str>::from(kind.name()))
+            .collect::<Vec<_>>();
+        let alias_names = parser
+            .aliases()
+            .iter()
+            .map(|alias| Arc::<str>::from(alias.value()))
+            .collect::<Vec<_>>();
+        Ok(Self {
+            lowered,
+            dense,
+            state_blocks,
+            state_block_refs: data
+                .state_block_refs
+                .into_iter()
+                .map(BlockRef::new)
+                .collect(),
+            action_blocks: data
+                .action_blocks
+                .into_iter()
+                .map(|rows| {
+                    rows.into_iter()
+                        .map(|blocks| {
+                            blocks
+                                .into_iter()
+                                .map(|block| WeavyParserActionBlock {
+                                    action: block.action,
+                                    block_ref: BlockRef::new(block.block_ref),
+                                })
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect(),
+            action_entry_index: RuntimeWeavyStateActionEntryIndex::new(table),
+            goto_index: RuntimeWeavyStateGotoIndex::new(table),
+            extra_node_index: RuntimeWeavyExtraNodeIndex::new(parser, &public_node_kind_names),
+            public_node_kind_names,
+            alias_names,
+        })
+    }
+}
+
+impl WeavyOpData {
+    fn from_runtime(op: &DenseSnarkWeavyOp) -> Self {
+        match op {
+            WeavyOp::Control(ControlOp::CallBlock { block, base_offset }) => Self::CallBlock {
+                block: block.index(),
+                base_offset: *base_offset,
+            },
+            WeavyOp::Control(ControlOp::CallBlockThen {
+                block,
+                then,
+                base_offset,
+            }) => Self::CallBlockThen {
+                block: block.index(),
+                then: then.index(),
+                base_offset: *base_offset,
+            },
+            WeavyOp::Control(ControlOp::Return) => Self::Return,
+            WeavyOp::Intrinsic(intrinsic) => Self::Intrinsic(intrinsic.clone()),
+            _ => unreachable!("Snark parser programs only contain control and intrinsic ops"),
+        }
+    }
+
+    fn into_runtime(self) -> Result<DenseSnarkWeavyOp, WeavyParseError> {
+        Ok(match self {
+            Self::CallBlock { block, base_offset } => WeavyOp::Control(ControlOp::CallBlock {
+                block: BlockRef::new(block),
+                base_offset,
+            }),
+            Self::CallBlockThen {
+                block,
+                then,
+                base_offset,
+            } => WeavyOp::Control(ControlOp::CallBlockThen {
+                block: BlockRef::new(block),
+                then: BlockRef::new(then),
+                base_offset,
+            }),
+            Self::Return => WeavyOp::Control(ControlOp::Return),
+            Self::Intrinsic(intrinsic) => WeavyOp::Intrinsic(intrinsic),
+        })
+    }
+}
+
+fn dense_to_symbolic_lowered(
+    dense: &DenseSnarkWeavyLowered,
+    state_blocks: &[SnarkBlockId],
+) -> Result<SnarkWeavyLowered, WeavyParseError> {
+    let block_ids = (0..dense.blocks.len())
+        .map(SnarkBlockId::from_index)
+        .collect::<Vec<_>>();
+    let map_op = |op: &DenseSnarkWeavyOp| -> Result<SnarkWeavyOp, WeavyParseError> {
+        Ok(match op {
+            WeavyOp::Control(ControlOp::CallBlock { block, base_offset }) => {
+                WeavyOp::Control(ControlOp::CallBlock {
+                    block: *block_ids.get(block.index()).ok_or(
+                        WeavyParseError::MissingDenseRuntimeBlock { block: block.index() },
+                    )?,
+                    base_offset: *base_offset,
+                })
+            }
+            WeavyOp::Control(ControlOp::CallBlockThen {
+                block,
+                then,
+                base_offset,
+            }) => WeavyOp::Control(ControlOp::CallBlockThen {
+                block: *block_ids.get(block.index()).ok_or(
+                    WeavyParseError::MissingDenseRuntimeBlock { block: block.index() },
+                )?,
+                then: *block_ids.get(then.index()).ok_or(
+                    WeavyParseError::MissingDenseRuntimeBlock { block: then.index() },
+                )?,
+                base_offset: *base_offset,
+            }),
+            WeavyOp::Control(ControlOp::Return) => WeavyOp::Control(ControlOp::Return),
+            WeavyOp::Intrinsic(intrinsic) => WeavyOp::Intrinsic(intrinsic.clone()),
+            _ => return Err(WeavyParseError::UnsupportedCanonicalOp),
+        })
+    };
+    let mut lowered = WeavyLowered::new(
+        dense
+            .program
+            .iter()
+            .map(map_op)
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    for (index, block) in dense.blocks.iter().enumerate() {
+        lowered.blocks.insert(
+            block_ids[index],
+            block.iter().map(map_op).collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    if state_blocks.iter().any(|block| block.get() as usize >= dense.blocks.len()) {
+        return Err(WeavyParseError::UnsupportedCanonicalOp);
+    }
+    Ok(lowered)
 }
 
 fn dense_snark_intrinsic_semantic_stats(
@@ -2216,6 +2451,46 @@ impl WeavyParsePlan {
         let program = lower_weavy_parser_program(parser, table)?;
         let compiled_lex_modes = parser_ir::compile_lex_modes(grammar, parser, table);
         let lexer_program = WeavyLexerProgram::from_compiled_modes(compiled_lex_modes, table);
+        let resolved_cst_names = parser_ir::ResolvedCstNames::from_parser(parser);
+        let auto_close_index = RuntimeWeavyAutoCloseIndex::new(parser, &lexer_program);
+        #[cfg(all(
+            snark_jit_active,
+            any(
+                all(target_os = "macos", target_arch = "aarch64"),
+                all(target_os = "linux", target_arch = "x86_64")
+            )
+        ))]
+        let hostcall_blocks = Arc::new(RuntimeWeavyHostCallBlockCache::new(&program));
+        Ok(Self {
+            program,
+            lexer_program,
+            resolved_cst_names,
+            auto_close_index,
+            #[cfg(all(
+                snark_jit_active,
+                any(
+                    all(target_os = "macos", target_arch = "aarch64"),
+                    all(target_os = "linux", target_arch = "x86_64")
+                )
+            ))]
+            hostcall_blocks,
+        })
+    }
+
+    pub(crate) fn artifact_data(&self) -> WeavyParsePlanData {
+        WeavyParsePlanData {
+            parser_program: self.program.artifact_data(),
+            lexer_program: self.lexer_program.artifact_data(),
+        }
+    }
+
+    pub(crate) fn from_artifact_data(
+        data: WeavyParsePlanData,
+        parser: &parser_ir::ParserGrammar,
+        table: &parser_ir::ParseTable,
+    ) -> Result<Self, WeavyParseError> {
+        let program = WeavyParserProgram::from_artifact_data(data.parser_program, parser, table)?;
+        let lexer_program = WeavyLexerProgram::from_artifact_data(data.lexer_program)?;
         let resolved_cst_names = parser_ir::ResolvedCstNames::from_parser(parser);
         let auto_close_index = RuntimeWeavyAutoCloseIndex::new(parser, &lexer_program);
         #[cfg(all(
@@ -2691,6 +2966,8 @@ pub struct WeavyLexToken {
     pub end: usize,
     /// Furthest byte the lexer inspected while deciding this token.
     pub inspected_end: usize,
+    /// Keyword/reserved-word rewrite status for the selected token.
+    pub keyword: parser_ir::KeywordStatus,
     /// External scanner result and snapshots, when this token came from a scanner.
     pub scanner: Option<ExternalScanResult>,
 }
@@ -2701,6 +2978,7 @@ impl WeavyLexToken {
             lookahead: token.lookahead,
             end: token.end,
             inspected_end: token.inspected_end,
+            keyword: token.keyword,
             scanner: token.scanner,
         }
     }
@@ -3299,6 +3577,66 @@ pub enum WeavyLexerBarrierKind {
     ExternalScanner,
 }
 
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+struct WeavyLexerProgramData {
+    modes: Vec<WeavyLexModeData>,
+    state_modes: Vec<WeavyLexModeData>,
+}
+
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+struct WeavyLexModeData {
+    terminals: Vec<WeavyLexTerminalData>,
+    external_lookaheads: Vec<WeavyExternalLookaheadData>,
+    external_count: usize,
+}
+
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+struct WeavyLexTerminalData {
+    terminal: parser_ir::TerminalId,
+    matcher: WeavyTerminalMatcherData,
+    lookahead: Option<WeavyTerminalLookaheadData>,
+    immediate: bool,
+    literal: bool,
+    lexical_precedence: i32,
+    implicit_precedence: i32,
+}
+
+#[derive(Clone, Copy, Debug, Facet, PartialEq, Eq)]
+struct WeavyTerminalLookaheadData {
+    terminal: parser_ir::TerminalId,
+    lookahead: parser_ir::LookaheadSymbol,
+    shifts_only_extra: bool,
+}
+
+#[derive(Clone, Copy, Debug, Facet, PartialEq, Eq)]
+struct WeavyExternalLookaheadData {
+    external: parser_ir::ExternalId,
+    lookahead: parser_ir::LookaheadSymbol,
+}
+
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+#[repr(u8)]
+enum WeavyTerminalMatcherData {
+    Expr(WeavyLexExprData),
+    UnsupportedTerminal { terminal: parser_ir::TerminalId },
+}
+
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+#[repr(u8)]
+enum WeavyLexExprData {
+    Blank,
+    String(String),
+    Pattern { source: String, flags: Option<String> },
+    Until { markers: Vec<String> },
+    Nested { open: String, close: String },
+    AutoClose(Box<WeavyAutoCloseSpec>),
+    Seq(Vec<WeavyLexExprData>),
+    Choice(Vec<WeavyLexExprData>),
+    Repeat(Box<WeavyLexExprData>),
+    Repeat1(Box<WeavyLexExprData>),
+    UnsupportedSymbol(GrammarExprId),
+}
+
 #[derive(Clone, Debug)]
 struct WeavyLexerProgram {
     modes: Vec<WeavyLexModeProgram>,
@@ -3361,6 +3699,33 @@ impl WeavyLexerProgram {
         }
         stats
     }
+
+    fn artifact_data(&self) -> WeavyLexerProgramData {
+        WeavyLexerProgramData {
+            modes: self.modes.iter().map(WeavyLexModeProgram::artifact_data).collect(),
+            state_modes: self
+                .state_modes
+                .iter()
+                .map(WeavyLexModeProgram::artifact_data)
+                .collect(),
+        }
+    }
+
+    fn from_artifact_data(data: WeavyLexerProgramData) -> Result<Self, WeavyParseError> {
+        let mut compiler = WeavyLexerCompiler::default();
+        Ok(Self {
+            modes: data
+                .modes
+                .into_iter()
+                .map(|mode| WeavyLexModeProgram::from_artifact_data(mode, &mut compiler))
+                .collect::<Result<Vec<_>, _>>()?,
+            state_modes: data
+                .state_modes
+                .into_iter()
+                .map(|mode| WeavyLexModeProgram::from_artifact_data(mode, &mut compiler))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -3371,6 +3736,31 @@ struct WeavyLexerCompiler {
     choice_matchers: HashMap<Vec<String>, WeavyRegexChoiceMatcher>,
     next_regex_leaf_id: usize,
     next_choice_matcher_id: usize,
+    /// deduplicated compiled regex leaves by (source, flags). `compile_composite_regex`
+    /// and pattern leaves used to build a fresh `AutomataRegex` + `HybridDfa` per lex
+    /// mode even for identical sources; caching makes repeated leaves share one engine
+    /// (and one runtime DFA cache slot, which is safe — the cache is a pure function of
+    /// the source).
+    regex_leaves: HashMap<(String, Option<String>), WeavyRegexLeaf>,
+    /// memoized ε-membership per regex source. `regex_source_matches_empty` used to
+    /// compile a full regex_automata engine per call just to test whether a pattern
+    /// matches the empty string; on real grammars the same handful of sources recur
+    /// across every lex mode, so a per-compiler cache removes essentially all of that
+    /// compilation (tens of thousands of builds down to a handful).
+    regex_emptiness: std::collections::HashMap<String, bool>,
+}
+
+impl WeavyLexerCompiler {
+    /// Whether `source` matches the empty string, memoized per source so repeated
+    /// ε-membership tests across lex modes never recompile the regex engine.
+    fn regex_source_matches_empty(&mut self, source: &str) -> bool {
+        if let Some(&result) = self.regex_emptiness.get(source) {
+            return result;
+        }
+        let result = regex_source_matches_empty_compute(source);
+        self.regex_emptiness.insert(source.to_string(), result);
+        result
+    }
 }
 
 impl WeavyLexerCompiler {
@@ -3391,7 +3781,7 @@ impl WeavyLexerCompiler {
         &mut self,
         terminals: &mut [WeavyLexTerminal],
     ) -> Option<WeavyDirectPatternSet> {
-        let entries = WeavyDirectPatternSet::entries_from_terminals(terminals);
+        let entries = WeavyDirectPatternSet::entries_from_terminals(terminals, self);
         if entries.is_empty() {
             return None;
         }
@@ -3422,9 +3812,13 @@ impl WeavyLexerCompiler {
     }
 
     fn regex_leaf(&mut self, source: String, flags: Option<String>) -> Option<WeavyRegexLeaf> {
+        if let Some(leaf) = self.regex_leaves.get(&(source.clone(), flags.clone())) {
+            return Some(leaf.clone());
+        }
         let id = self.next_regex_leaf_id;
-        let leaf = WeavyRegexLeaf::new(Some(id), source, flags)?;
+        let leaf = WeavyRegexLeaf::new(Some(id), source.clone(), flags.clone())?;
         self.next_regex_leaf_id += 1;
+        self.regex_leaves.insert((source, flags), leaf.clone());
         Some(leaf)
     }
 
@@ -3494,7 +3888,7 @@ impl WeavyUntilMatcher {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
 struct WeavyAutoCloseSpec {
     tag: String,
     open: Option<String>,
@@ -3509,7 +3903,7 @@ struct WeavyAutoCloseSpec {
     rules: Vec<WeavyAutoCloseRuleSpec>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
 struct WeavyAutoCloseRuleSpec {
     tag: String,
     closed_by_tags: Vec<String>,
@@ -3968,6 +4362,50 @@ impl WeavyLexModeProgram {
         }
     }
 
+    fn artifact_data(&self) -> WeavyLexModeData {
+        WeavyLexModeData {
+            terminals: self
+                .terminals
+                .iter()
+                .map(WeavyLexTerminal::artifact_data)
+                .collect(),
+            external_lookaheads: self
+                .external_lookaheads
+                .iter()
+                .map(|lookahead| WeavyExternalLookaheadData {
+                    external: lookahead.external,
+                    lookahead: lookahead.lookahead,
+                })
+                .collect(),
+            external_count: self.external_count,
+        }
+    }
+
+    fn from_artifact_data(
+        data: WeavyLexModeData,
+        compiler: &mut WeavyLexerCompiler,
+    ) -> Result<Self, WeavyParseError> {
+        let terminals = data
+            .terminals
+            .into_iter()
+            .map(|terminal| WeavyLexTerminal::from_artifact_data(terminal, compiler))
+            .collect::<Result<Vec<_>, _>>()?;
+        let external_lookaheads = data
+            .external_lookaheads
+            .into_iter()
+            .map(|lookahead| RuntimeWeavyExternalLookahead {
+                external: lookahead.external,
+                lookahead: lookahead.lookahead,
+            })
+            .collect();
+        Ok(Self::from_terminals(
+            terminals,
+            external_lookaheads,
+            data.external_count,
+            compiler,
+        ))
+    }
+
     fn terminals(&self) -> &[WeavyLexTerminal] {
         &self.terminals
     }
@@ -4106,6 +4544,43 @@ impl WeavyLexTerminal {
         }
         self.matcher.add_stats(stats);
     }
+
+    fn artifact_data(&self) -> WeavyLexTerminalData {
+        WeavyLexTerminalData {
+            terminal: self.terminal,
+            matcher: self.matcher.artifact_data(),
+            lookahead: self.lookahead.map(|lookahead| WeavyTerminalLookaheadData {
+                terminal: lookahead.terminal,
+                lookahead: lookahead.lookahead,
+                shifts_only_extra: lookahead.shifts_only_extra,
+            }),
+            immediate: self.immediate,
+            literal: self.literal,
+            lexical_precedence: self.lexical_precedence,
+            implicit_precedence: self.implicit_precedence,
+        }
+    }
+
+    fn from_artifact_data(
+        data: WeavyLexTerminalData,
+        compiler: &mut WeavyLexerCompiler,
+    ) -> Result<Self, WeavyParseError> {
+        Ok(Self {
+            terminal: data.terminal,
+            matcher: WeavyTerminalMatcher::from_artifact_data(data.matcher, compiler)?,
+            lookahead: data.lookahead.map(|lookahead| RuntimeWeavyTerminalLookahead {
+                terminal: lookahead.terminal,
+                lookahead: lookahead.lookahead,
+                shifts_only_extra: lookahead.shifts_only_extra,
+            }),
+            immediate: data.immediate,
+            literal: data.literal,
+            lexical_precedence: data.lexical_precedence,
+            implicit_precedence: data.implicit_precedence,
+            direct_literal_index: None,
+            direct_pattern_index: None,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -4134,6 +4609,29 @@ impl WeavyTerminalMatcher {
             Self::Expr(expr) => expr.add_stats(stats),
             Self::UnsupportedTerminal { .. } => stats.record(WeavyLexOpKind::UnsupportedTerminal),
         }
+    }
+
+    fn artifact_data(&self) -> WeavyTerminalMatcherData {
+        match self {
+            Self::Expr(expr) => WeavyTerminalMatcherData::Expr(expr.artifact_data()),
+            Self::UnsupportedTerminal { terminal } => {
+                WeavyTerminalMatcherData::UnsupportedTerminal { terminal: *terminal }
+            }
+        }
+    }
+
+    fn from_artifact_data(
+        data: WeavyTerminalMatcherData,
+        compiler: &mut WeavyLexerCompiler,
+    ) -> Result<Self, WeavyParseError> {
+        Ok(match data {
+            WeavyTerminalMatcherData::Expr(expr) => {
+                Self::Expr(WeavyLexExpr::from_artifact_data(expr, compiler)?)
+            }
+            WeavyTerminalMatcherData::UnsupportedTerminal { terminal } => {
+                Self::UnsupportedTerminal { terminal }
+            }
+        })
     }
 }
 
@@ -4208,7 +4706,7 @@ impl WeavyLexExpr {
     }
 
     fn compile_composite_regex(expr: Self, compiler: &mut WeavyLexerCompiler) -> Self {
-        let Some(source) = regex_source_for_weavy_lex_expr(&expr) else {
+        let Some(source) = regex_source_for_weavy_lex_expr(&expr, compiler) else {
             return expr;
         };
         let Some(matcher) = compiler.regex_leaf(source, None) else {
@@ -4226,7 +4724,7 @@ impl WeavyLexExpr {
         };
         let mut sources = Vec::with_capacity(members.len());
         for member in members {
-            let Some(source) = regex_source_for_weavy_lex_expr(member) else {
+            let Some(source) = regex_source_for_weavy_lex_expr(member, compiler) else {
                 return expr;
             };
             if source.is_empty() {
@@ -4292,9 +4790,93 @@ impl WeavyLexExpr {
             Self::UnsupportedSymbol(_) => stats.record(WeavyLexOpKind::UnsupportedSymbol),
         }
     }
+
+    fn artifact_data(&self) -> WeavyLexExprData {
+        match self {
+            Self::Blank => WeavyLexExprData::Blank,
+            Self::String(value) => WeavyLexExprData::String(value.clone()),
+            Self::Pattern(pattern) => {
+                let (source, flags) = pattern.artifact_source();
+                WeavyLexExprData::Pattern { source, flags }
+            }
+            Self::Until(matcher) => WeavyLexExprData::Until {
+                markers: matcher.markers.clone(),
+            },
+            Self::Nested { open, close } => WeavyLexExprData::Nested {
+                open: open.clone(),
+                close: close.clone(),
+            },
+            Self::AutoClose(spec) => WeavyLexExprData::AutoClose(spec.clone()),
+            Self::Seq(members) => WeavyLexExprData::Seq(
+                members.iter().map(Self::artifact_data).collect(),
+            ),
+            Self::Choice(members) => WeavyLexExprData::Choice(
+                members.iter().map(Self::artifact_data).collect(),
+            ),
+            Self::Repeat(content) => {
+                WeavyLexExprData::Repeat(Box::new(content.artifact_data()))
+            }
+            Self::Repeat1(content) => {
+                WeavyLexExprData::Repeat1(Box::new(content.artifact_data()))
+            }
+            Self::CompositeRegex { original, .. }
+            | Self::CompositeChoice { original, .. } => original.artifact_data(),
+            Self::UnsupportedSymbol(expr) => WeavyLexExprData::UnsupportedSymbol(*expr),
+        }
+    }
+
+    fn from_artifact_data(
+        data: WeavyLexExprData,
+        compiler: &mut WeavyLexerCompiler,
+    ) -> Result<Self, WeavyParseError> {
+        let expr = match data {
+            WeavyLexExprData::Blank => Self::Blank,
+            WeavyLexExprData::String(value) => Self::String(value),
+            WeavyLexExprData::Pattern { source, flags } => {
+                let pattern = crate::lex_match::compile_pattern(&source, flags.as_deref());
+                Self::Pattern(compiler.pattern_matcher(pattern))
+            }
+            WeavyLexExprData::Until { markers } => {
+                Self::Until(WeavyUntilMatcher::from_compiled(
+                    crate::lex_match::compile_until_markers(&markers),
+                ))
+            }
+            WeavyLexExprData::Nested { open, close } => Self::Nested { open, close },
+            WeavyLexExprData::AutoClose(spec) => Self::AutoClose(spec),
+            WeavyLexExprData::Seq(members) => Self::Seq(
+                members
+                    .into_iter()
+                    .map(|member| Self::from_artifact_data(member, compiler))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            WeavyLexExprData::Choice(members) => Self::Choice(
+                members
+                    .into_iter()
+                    .map(|member| Self::from_artifact_data(member, compiler))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            WeavyLexExprData::Repeat(content) => {
+                Self::Repeat(Box::new(Self::from_artifact_data(*content, compiler)?))
+            }
+            WeavyLexExprData::Repeat1(content) => {
+                Self::Repeat1(Box::new(Self::from_artifact_data(*content, compiler)?))
+            }
+            WeavyLexExprData::UnsupportedSymbol(expr) => Self::UnsupportedSymbol(expr),
+        };
+        Ok(match expr {
+            Self::Seq(_) | Self::Repeat(_) | Self::Repeat1(_) => {
+                Self::compile_composite_regex(expr, compiler)
+            }
+            Self::Choice(_) => Self::compile_composite_choice(expr, compiler),
+            _ => expr,
+        })
+    }
 }
 
-fn regex_source_for_weavy_lex_expr(expr: &WeavyLexExpr) -> Option<String> {
+fn regex_source_for_weavy_lex_expr(
+    expr: &WeavyLexExpr,
+    compiler: &mut WeavyLexerCompiler,
+) -> Option<String> {
     match expr {
         WeavyLexExpr::Blank => Some(String::new()),
         WeavyLexExpr::String(value) => Some(regex::escape(value)),
@@ -4302,21 +4884,21 @@ fn regex_source_for_weavy_lex_expr(expr: &WeavyLexExpr) -> Option<String> {
         WeavyLexExpr::Seq(members) => {
             let mut source = String::new();
             for member in members {
-                source.push_str(&regex_source_for_weavy_lex_expr(member)?);
+                source.push_str(&regex_source_for_weavy_lex_expr(member, compiler)?);
             }
             Some(source)
         }
         WeavyLexExpr::Choice(_) => None,
         WeavyLexExpr::Repeat(content) => {
-            let source = regex_source_for_weavy_lex_expr(content)?;
+            let source = regex_source_for_weavy_lex_expr(content, compiler)?;
             if source.is_empty() {
                 return None;
             }
             Some(format!("(?:{source})*"))
         }
         WeavyLexExpr::Repeat1(content) => {
-            let source = regex_source_for_weavy_lex_expr(content)?;
-            if source.is_empty() || regex_source_matches_empty(&source) {
+            let source = regex_source_for_weavy_lex_expr(content, compiler)?;
+            if source.is_empty() || compiler.regex_source_matches_empty(&source) {
                 return None;
             }
             Some(format!("(?:{source})+"))
@@ -4330,7 +4912,10 @@ fn regex_source_for_weavy_lex_expr(expr: &WeavyLexExpr) -> Option<String> {
     }
 }
 
-fn direct_set_regex_source_for_weavy_lex_expr(expr: &WeavyLexExpr) -> Option<String> {
+fn direct_set_regex_source_for_weavy_lex_expr(
+    expr: &WeavyLexExpr,
+    compiler: &mut WeavyLexerCompiler,
+) -> Option<String> {
     match expr {
         WeavyLexExpr::Blank => Some(String::new()),
         WeavyLexExpr::String(value) => Some(regex::escape(value)),
@@ -4338,28 +4923,30 @@ fn direct_set_regex_source_for_weavy_lex_expr(expr: &WeavyLexExpr) -> Option<Str
         WeavyLexExpr::Seq(members) => {
             let mut source = String::new();
             for member in members {
-                source.push_str(&direct_set_regex_source_for_weavy_lex_expr(member)?);
+                source.push_str(&direct_set_regex_source_for_weavy_lex_expr(
+                    member, compiler,
+                )?);
             }
             Some(source)
         }
-        WeavyLexExpr::Choice(members) => direct_set_choice_regex_source(members),
+        WeavyLexExpr::Choice(members) => direct_set_choice_regex_source(members, compiler),
         WeavyLexExpr::Repeat(content) => {
-            let source = direct_set_regex_source_for_weavy_lex_expr(content)?;
+            let source = direct_set_regex_source_for_weavy_lex_expr(content, compiler)?;
             if source.is_empty() {
                 return None;
             }
             Some(format!("(?:{source})*"))
         }
         WeavyLexExpr::Repeat1(content) => {
-            let source = direct_set_regex_source_for_weavy_lex_expr(content)?;
-            if source.is_empty() || regex_source_matches_empty(&source) {
+            let source = direct_set_regex_source_for_weavy_lex_expr(content, compiler)?;
+            if source.is_empty() || compiler.regex_source_matches_empty(&source) {
                 return None;
             }
             Some(format!("(?:{source})+"))
         }
         WeavyLexExpr::CompositeRegex { matcher, .. } => Some(matcher.source().to_owned()),
         WeavyLexExpr::CompositeChoice { original, .. } => match original.as_ref() {
-            WeavyLexExpr::Choice(members) => direct_set_choice_regex_source(members),
+            WeavyLexExpr::Choice(members) => direct_set_choice_regex_source(members, compiler),
             _ => None,
         },
         WeavyLexExpr::Until(_)
@@ -4369,10 +4956,15 @@ fn direct_set_regex_source_for_weavy_lex_expr(expr: &WeavyLexExpr) -> Option<Str
     }
 }
 
-fn direct_set_choice_regex_source(members: &[WeavyLexExpr]) -> Option<String> {
+fn direct_set_choice_regex_source(
+    members: &[WeavyLexExpr],
+    compiler: &mut WeavyLexerCompiler,
+) -> Option<String> {
     let mut sources = Vec::with_capacity(members.len());
     for member in members {
-        sources.push(direct_set_regex_source_for_weavy_lex_expr(member)?);
+        sources.push(direct_set_regex_source_for_weavy_lex_expr(
+            member, compiler,
+        )?);
     }
     if sources.is_empty() {
         return None;
@@ -4380,7 +4972,7 @@ fn direct_set_choice_regex_source(members: &[WeavyLexExpr]) -> Option<String> {
     Some(format!("(?:{})", sources.join("|")))
 }
 
-fn regex_source_matches_empty(source: &str) -> bool {
+fn regex_source_matches_empty_compute(source: &str) -> bool {
     AutomataRegex::new(source).ok().and_then(|regex| {
         regex
             .find(Input::new("").anchored(Anchored::Yes))
@@ -4483,11 +5075,21 @@ impl WeavyPatternMatcher {
             Self::Unsupported => None,
         }
     }
+
+    fn artifact_source(&self) -> (String, Option<String>) {
+        match self {
+            Self::Known(pattern) => (pattern.source().to_owned(), None),
+            Self::Regex(leaf) => (leaf.source_pattern.clone(), leaf.flags.clone()),
+            Self::Unsupported => (String::new(), None),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 struct WeavyRegexLeaf {
     cache_id: Option<usize>,
+    source_pattern: String,
+    flags: Option<String>,
     regex_source: String,
     automaton: Arc<AutomataRegex>,
     dfa: Option<Arc<HybridDfa>>,
@@ -4500,6 +5102,8 @@ impl WeavyRegexLeaf {
         let dfa = HybridDfa::builder().build(&regex_source).ok().map(Arc::new);
         Some(Self {
             cache_id,
+            source_pattern: source,
+            flags,
             regex_source,
             automaton,
             dfa,
@@ -4733,13 +5337,17 @@ struct WeavyDirectPatternSetEntry {
 impl WeavyDirectPatternSet {
     #[cfg(test)]
     fn from_terminals(terminals: &mut [WeavyLexTerminal]) -> Option<Self> {
-        let entries = Self::entries_from_terminals(terminals);
+        let mut compiler = WeavyLexerCompiler::default();
+        let entries = Self::entries_from_terminals(terminals, &mut compiler);
         let set = Self::from_entries(&entries)?;
         Self::assign_terminal_slots(terminals, &entries);
         Some(set)
     }
 
-    fn entries_from_terminals(terminals: &[WeavyLexTerminal]) -> Vec<WeavyDirectPatternSetEntry> {
+    fn entries_from_terminals(
+        terminals: &[WeavyLexTerminal],
+        compiler: &mut WeavyLexerCompiler,
+    ) -> Vec<WeavyDirectPatternSetEntry> {
         let mut entries = Vec::new();
         let mut next_direct_pattern_index = 0;
         for (terminal_index, terminal) in terminals.iter().enumerate() {
@@ -4749,7 +5357,7 @@ impl WeavyDirectPatternSet {
             let WeavyTerminalMatcher::Expr(expr) = &terminal.matcher else {
                 continue;
             };
-            let Some(regex_sources) = direct_pattern_set_regex_sources(expr) else {
+            let Some(regex_sources) = direct_pattern_set_regex_sources(expr, compiler) else {
                 continue;
             };
             let direct_pattern_index = next_direct_pattern_index;
@@ -10749,7 +11357,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
                 points,
                 extra: false,
                 named: false,
-                keyword: parser_ir::KeywordStatus::Unchecked,
+                keyword: token.keyword,
             });
         }
         trace_push!(
@@ -11104,6 +11712,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
                 lookahead: parser_ir::LookaheadSymbol::Eof,
                 end: byte_position,
                 inspected_end: byte_position,
+                keyword: parser_ir::KeywordStatus::Unchecked,
                 scanner: None,
             });
         }
@@ -11127,6 +11736,13 @@ impl<'a> RuntimeWeavyStepper<'a> {
             Some(entry) => !entry.extra && entry.end_byte == byte_position,
             None => byte_position == 0,
         };
+        let word = mode.word();
+        let reserved_context = mode.reserved_context().and_then(|context| {
+            self.parser
+                .reserved_contexts()
+                .get(context.get() as usize)
+        });
+        let mut matched_reserved = Vec::<(parser_ir::TerminalId, parser_ir::LexMatch)>::new();
         let mut best = None::<RuntimeWeavyTokenCandidate>;
         let mut best_rejected = None::<RuntimeWeavyTokenCandidate>;
         self.lexer_scratch.with_direct_set_matches(
@@ -11159,7 +11775,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
                     if match_.end == byte_position {
                         continue;
                     }
-                    let candidate = RuntimeWeavyTokenCandidate {
+                    let mut candidate = RuntimeWeavyTokenCandidate {
                         lookahead: parser_ir::LookaheadSymbol::Terminal(terminal_row.terminal),
                         end: match_.end,
                         inspected_end: match_.inspected_end,
@@ -11169,8 +11785,46 @@ impl<'a> RuntimeWeavyStepper<'a> {
                         literal: terminal_row.literal,
                         lexical_precedence: terminal_row.lexical_precedence,
                         implicit_precedence: terminal_row.implicit_precedence,
+                        keyword: word
+                            .is_some_and(|word| word == terminal_row.terminal)
+                            .then_some(parser_ir::KeywordStatus::Word)
+                            .unwrap_or(parser_ir::KeywordStatus::Unchecked),
                         scanner: None,
                     };
+                    if reserved_context.is_some_and(|context| {
+                        context.entries().contains(&terminal_row.terminal)
+                    }) {
+                        matched_reserved.push((terminal_row.terminal, match_));
+                        continue;
+                    }
+                    let candidate_is_word = word.is_some_and(|word| word == terminal_row.terminal);
+                    if candidate_is_word
+                        && let Some((reserved_terminal, reserved_match)) = matched_reserved
+                            .iter()
+                            .copied()
+                            .find(|(_, reserved_match)| reserved_match.end == match_.end)
+                    {
+                        candidate.lookahead = parser_ir::LookaheadSymbol::ReservedWord {
+                            terminal: reserved_terminal,
+                            context: mode
+                                .reserved_context()
+                                .expect("reserved match requires an active context"),
+                        };
+                        candidate.inspected_end = candidate
+                            .inspected_end
+                            .max(reserved_match.inspected_end);
+                        candidate.keyword = parser_ir::KeywordStatus::Rewritten;
+                    }
+                    if candidate_is_word && reserved_context.is_some() {
+                        if candidate.keyword == parser_ir::KeywordStatus::Rewritten {
+                            candidate.extra = terminal_row
+                                .lookahead
+                                .is_some_and(|lookahead| lookahead.shifts_only_extra);
+                            push_runtime_weavy_candidate(&mut best, candidate);
+                            continue;
+                        }
+                        candidate.keyword = parser_ir::KeywordStatus::Word;
+                    }
                     let Some(lookahead) = terminal_row.lookahead else {
                         debug_assert!(
                             false,
@@ -11185,6 +11839,44 @@ impl<'a> RuntimeWeavyStepper<'a> {
                             lookahead: lookahead.lookahead,
                             extra: lookahead.shifts_only_extra,
                             ..candidate
+                        },
+                    );
+                }
+                if let (Some(word), Some(context)) = (word, mode.reserved_context())
+                    && let Some(word_index) = mode_program
+                        .terminals()
+                        .iter()
+                        .position(|terminal| terminal.terminal == word)
+                    && let Some(word_match) = self.match_compiled_terminal_with_set(
+                        &mode_program.terminals()[word_index],
+                        byte_position,
+                        direct_literal_ends,
+                        direct_pattern_ends,
+                    )?
+                    && word_match.end != byte_position
+                    && let Some((reserved_terminal, reserved_match)) = matched_reserved
+                        .iter()
+                        .copied()
+                        .find(|(_, reserved_match)| reserved_match.end == word_match.end)
+                {
+                    let word_row = &mode_program.terminals()[word_index];
+                    push_runtime_weavy_candidate(
+                        &mut best,
+                        RuntimeWeavyTokenCandidate {
+                            lookahead: parser_ir::LookaheadSymbol::ReservedWord {
+                                terminal: reserved_terminal,
+                                context,
+                            },
+                            end: word_match.end,
+                            inspected_end: word_match.inspected_end.max(reserved_match.inspected_end),
+                            extra: false,
+                            external: false,
+                            immediate: word_row.immediate,
+                            literal: word_row.literal,
+                            lexical_precedence: word_row.lexical_precedence,
+                            implicit_precedence: word_row.implicit_precedence,
+                            keyword: parser_ir::KeywordStatus::Rewritten,
+                            scanner: None,
                         },
                     );
                 }
@@ -11213,6 +11905,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
                     immediate: false,
                     literal: true,
                     lexical_precedence: 0,
+                    keyword: parser_ir::KeywordStatus::Unchecked,
                     implicit_precedence: 0,
                     scanner: Some(scanner_result),
                 };
@@ -11224,6 +11917,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
                 lookahead: candidate.lookahead,
                 end: candidate.end,
                 inspected_end: candidate.inspected_end,
+                keyword: candidate.keyword,
                 scanner: candidate.scanner,
             });
         }
@@ -11289,6 +11983,7 @@ impl<'a> RuntimeWeavyStepper<'a> {
                 lookahead: lookahead.lookahead,
                 end: byte_position,
                 inspected_end: byte_position + marker_len,
+                keyword: parser_ir::KeywordStatus::Unchecked,
                 scanner: None,
             }));
         }
@@ -11785,6 +12480,7 @@ struct RuntimeWeavyToken {
     lookahead: parser_ir::LookaheadSymbol,
     end: usize,
     inspected_end: usize,
+    keyword: parser_ir::KeywordStatus,
     scanner: Option<ExternalScanResult>,
 }
 
@@ -11799,6 +12495,7 @@ struct RuntimeWeavyTokenCandidate {
     literal: bool,
     lexical_precedence: i32,
     implicit_precedence: i32,
+    keyword: parser_ir::KeywordStatus,
     scanner: Option<ExternalScanResult>,
 }
 
@@ -12001,20 +12698,23 @@ fn match_weavy_direct_pattern_fallback(
     }
 }
 
-fn direct_pattern_set_regex_sources(expr: &WeavyLexExpr) -> Option<Vec<String>> {
+fn direct_pattern_set_regex_sources(
+    expr: &WeavyLexExpr,
+    compiler: &mut WeavyLexerCompiler,
+) -> Option<Vec<String>> {
     match expr {
         WeavyLexExpr::Pattern(pattern) => pattern
             .regex_source()
             .map(|source| vec![source.into_owned()]),
         WeavyLexExpr::CompositeRegex { matcher, .. } => {
             let source = matcher.source().to_owned();
-            (!regex_source_matches_empty(&source)).then_some(vec![source])
+            (!compiler.regex_source_matches_empty(&source)).then_some(vec![source])
         }
         WeavyLexExpr::CompositeChoice { original, .. } => match original.as_ref() {
             WeavyLexExpr::Choice(members) => {
                 let mut sources = Vec::with_capacity(members.len());
                 for member in members {
-                    let source = direct_set_regex_source_for_weavy_lex_expr(member)?;
+                    let source = direct_set_regex_source_for_weavy_lex_expr(member, compiler)?;
                     if source.is_empty() {
                         return None;
                     }
@@ -12025,8 +12725,8 @@ fn direct_pattern_set_regex_sources(expr: &WeavyLexExpr) -> Option<Vec<String>> 
             _ => None,
         },
         _ => {
-            let source = direct_set_regex_source_for_weavy_lex_expr(expr)?;
-            (!regex_source_matches_empty(&source)).then_some(vec![source])
+            let source = direct_set_regex_source_for_weavy_lex_expr(expr, compiler)?;
+            (!compiler.regex_source_matches_empty(&source)).then_some(vec![source])
         }
     }
 }
@@ -13310,6 +14010,247 @@ fn runtime_weavy_input_ranges(
 mod tests {
     use super::*;
     use weavy::ir::{EffectOrdering, EffectResource, ResourceAccess, ResourceEffect};
+    fn prepared_reserved_grammar(
+        grammar_json: &str,
+    ) -> (
+        ValidatedGrammar,
+        parser_ir::ParserGrammar,
+        parser_ir::ParseTable,
+        WeavyParsePlan,
+    ) {
+        let raw = crate::grammar::RawGrammarJson::from_tree_sitter_json_str(grammar_json)
+            .expect("import reserved-word grammar");
+        let validated = ValidatedGrammar::from_raw(&raw).expect("validate reserved-word grammar");
+        let lexical = crate::lexical::LexicalFacts::from_grammar(&validated);
+        let parser = parser_ir::ParserGrammar::normalize_from_validated(&validated, &lexical)
+            .expect("normalize reserved-word grammar")
+            .prepare_productions_for_items()
+            .expect("prepare reserved-word grammar");
+        let table = parser_ir::ParseTable::from_grammar(&parser)
+            .expect("build reserved-word parse table");
+        let plan = WeavyParsePlan::new(&validated, &parser, &table)
+            .expect("build reserved-word Weavy plan");
+        (validated, parser, table, plan)
+    }
+
+    fn reserved_context_grammar_json(
+        identifier_pattern: &str,
+        keyword_pattern: &str,
+        keyword_flags: Option<&str>,
+        reserved_sets: &str,
+        second_context: Option<&str>,
+        allow_quoted: bool,
+    ) -> String {
+        let keyword_flags = keyword_flags
+            .map(|flags| format!(r#", "flags": "{flags}""#))
+            .unwrap_or_default();
+        let reserved_content = if allow_quoted {
+            r#"{
+              "type": "CHOICE",
+              "members": [
+                { "type": "SYMBOL", "name": "identifier" },
+                { "type": "SYMBOL", "name": "quoted_identifier" }
+              ]
+            }"#
+        } else {
+            r#"{ "type": "SYMBOL", "name": "identifier" }"#
+        };
+        let second_branch = second_context
+            .map(|context| {
+                format!(
+                    r#", {{
+                      "type": "SEQ",
+                      "members": [
+                        {{ "type": "STRING", "value": "other" }},
+                        {{
+                          "type": "RESERVED",
+                          "context_name": "{context}",
+                          "content": {{ "type": "SYMBOL", "name": "identifier" }}
+                        }}
+                      ]
+                    }}"#
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            r#"{{
+              "name": "reserved_runtime",
+              "extras": [],
+              "rules": {{
+                "source_file": {{
+                  "type": "CHOICE",
+                  "members": [
+                    {{
+                      "type": "SEQ",
+                      "members": [
+                        {{ "type": "STRING", "value": "plain" }},
+                        {{ "type": "SYMBOL", "name": "identifier" }}
+                      ]
+                    }},
+                    {{
+                      "type": "SEQ",
+                      "members": [
+                        {{ "type": "STRING", "value": "reserved" }},
+                        {{
+                          "type": "RESERVED",
+                          "context_name": "strict",
+                          "content": {reserved_content}
+                        }}
+                      ]
+                    }}{second_branch}
+                  ]
+                }},
+                "keyword": {{
+                  "type": "PATTERN",
+                  "value": "{keyword_pattern}"{keyword_flags}
+                }},
+                "identifier": {{
+                  "type": "TOKEN",
+                  "content": {{ "type": "PATTERN", "value": "{identifier_pattern}" }}
+                }},
+                "quoted_identifier": {{
+                  "type": "TOKEN",
+                  "content": {{
+                    "type": "PATTERN",
+                    "value": "\\\"[^\\\"]*\\\""
+                  }}
+                }}
+              }},
+              "word": "identifier",
+              "reserved": {reserved_sets}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn reserved_word_is_identifier_without_context_and_keyword_with_context() {
+        let grammar_json = reserved_context_grammar_json(
+            "[A-Za-z_][A-Za-z0-9_]*",
+            "row",
+            None,
+            r#"{
+                "strict": [{ "type": "PATTERN", "value": "row" }]
+            }"#,
+            None,
+            false,
+        );
+        let (_, parser, table, plan) = prepared_reserved_grammar(&grammar_json);
+
+        let strict_context = parser
+            .reserved_contexts()
+            .iter()
+            .find(|context| context.name() == "strict")
+            .expect("fixture declares the strict reserved context");
+        let strict_keyword = *strict_context
+            .entries()
+            .first()
+            .expect("strict context contains one keyword terminal");
+        assert!(strict_context.entries().contains(&strict_keyword));
+        let state = table
+            .states()
+            .iter()
+            .find(|state| {
+                table.lexical_modes()[state.lex_mode().get() as usize].reserved_context()
+                    == Some(strict_context.id())
+            })
+            .expect("fixture has a state using the strict reserved context");
+        let token = lex_one(
+            &plan,
+            &parser,
+            &table,
+            "reservedrow",
+            "reserved".len(),
+            state.id(),
+        )
+        .expect("lex the reserved spelling");
+        assert_eq!(
+            token.lookahead,
+            parser_ir::LookaheadSymbol::ReservedWord {
+                terminal: strict_keyword,
+                context: strict_context.id(),
+            }
+        );
+        assert_eq!(token.keyword, parser_ir::KeywordStatus::Rewritten);
+    }
+
+    #[test]
+    fn reserved_keyword_does_not_steal_a_longer_identifier_prefix() {
+        let grammar_json = reserved_context_grammar_json(
+            "[A-Za-z_][A-Za-z0-9_]*",
+            "row",
+            None,
+            r#"{
+                "strict": [{ "type": "PATTERN", "value": "row" }]
+            }"#,
+            None,
+            false,
+        );
+        let (_, parser, table, plan) = prepared_reserved_grammar(&grammar_json);
+
+        parse_prepared_weavy_with_report(&plan, &parser, &table, "reservedrow_number")
+            .expect("longest identifier match wins over the keyword prefix");
+    }
+
+    #[test]
+    fn reserved_keyword_matching_respects_case_insensitive_pattern_flags() {
+        let grammar_json = reserved_context_grammar_json(
+            "[A-Za-z_][A-Za-z0-9_]*",
+            "row",
+            Some("i"),
+            r#"{
+                "strict": [{ "type": "PATTERN", "value": "row", "flags": "i" }]
+            }"#,
+            None,
+            false,
+        );
+        let (_, parser, table, plan) = prepared_reserved_grammar(&grammar_json);
+
+        parse_prepared_weavy_with_report(&plan, &parser, &table, "reservedROW")
+            .expect("case-insensitive keyword rewrites in the active context");
+    }
+
+    #[test]
+    fn multiple_reserved_sets_select_only_the_active_context_keywords() {
+        let grammar_json = reserved_context_grammar_json(
+            "[A-Za-z_][A-Za-z0-9_]*",
+            "row|value",
+            None,
+            r#"{
+                "strict": [{ "type": "PATTERN", "value": "row" }],
+                "other": [{ "type": "PATTERN", "value": "value" }]
+            }"#,
+            Some("other"),
+            false,
+        );
+        let (_, parser, table, plan) = prepared_reserved_grammar(&grammar_json);
+
+        parse_prepared_weavy_with_report(&plan, &parser, &table, "reservedrow")
+            .expect("strict context reserves row");
+        parse_prepared_weavy_with_report(&plan, &parser, &table, "reservedvalue")
+            .expect("strict context leaves the other set's spelling as an identifier");
+        parse_prepared_weavy_with_report(&plan, &parser, &table, "othervalue")
+            .expect("other context reserves value");
+        parse_prepared_weavy_with_report(&plan, &parser, &table, "otherrow")
+            .expect("other context leaves the strict set's spelling as an identifier");
+    }
+
+    #[test]
+    fn quoted_identifier_is_unaffected_by_reserved_word_contexts() {
+        let grammar_json = reserved_context_grammar_json(
+            "[A-Za-z_][A-Za-z0-9_]*",
+            "row",
+            None,
+            r#"{
+                "strict": [{ "type": "PATTERN", "value": "row" }]
+            }"#,
+            None,
+            true,
+        );
+        let (_, parser, table, plan) = prepared_reserved_grammar(&grammar_json);
+
+        parse_prepared_weavy_with_report(&plan, &parser, &table, "reserved\"row\"")
+            .expect("quoted identifiers bypass reserved-word rewriting");
+    }
 
     fn empty_resolved_cst_names() -> parser_ir::ResolvedCstNames {
         parser_ir::ResolvedCstNames::empty_for_tests()
@@ -13932,6 +14873,7 @@ mod tests {
             literal: flags.literal,
             lexical_precedence: flags.lexical_precedence,
             implicit_precedence: flags.implicit_precedence,
+            keyword: parser_ir::KeywordStatus::Unchecked,
             scanner: None,
         }
     }
@@ -16863,5 +17805,60 @@ mod tests {
             }],
             state_modes: vec![],
         }
+    }
+
+    #[test]
+    fn regex_emptiness_cache_matches_direct_compute() {
+        // The memoized ε-membership test must agree with the uncached regex_automata
+        // build so the lexer-compiler cache never changes which `+`/repeat patterns are
+        // accepted. Covers empty-matching and non-empty-matching sources.
+        let sources = [
+            "a*", "(?:ab)*", "[0-9]*", "(?:a|b)*", "(?:a*)+", "a+", "abc", "\\w+", "[0-9]+",
+            "(?:a|b)+",
+        ];
+        let mut compiler = WeavyLexerCompiler::default();
+        for source in sources {
+            let cached = compiler.regex_source_matches_empty(source);
+            let direct = regex_source_matches_empty_compute(source);
+            assert_eq!(
+                cached, direct,
+                "cache disagrees with direct compute for {source:?}"
+            );
+            // A repeated call must hit the cache and return the identical value.
+            assert_eq!(
+                compiler.regex_source_matches_empty(source),
+                cached,
+                "cache inconsistent across calls for {source:?}"
+            );
+        }
+        // Anchored expectations: a star matches empty; a plus / literal does not.
+        assert!(compiler.regex_source_matches_empty("a*"));
+        assert!(!compiler.regex_source_matches_empty("a+"));
+        assert!(!compiler.regex_source_matches_empty("abc"));
+    }
+
+    #[test]
+    fn identical_regex_sources_share_a_deduped_leaf() {
+        // Repeated composite/pattern leaves with the same source must reuse one compiled
+        // engine (same cache id) and behave identically at match time.
+        let mut compiler = WeavyLexerCompiler::default();
+        let first = compiler
+            .regex_leaf("[a-z]+".to_string(), None)
+            .expect("first leaf compiles");
+        let second = compiler
+            .regex_leaf("[a-z]+".to_string(), None)
+            .expect("deduped leaf compiles");
+        assert_eq!(
+            first.cache_id, second.cache_id,
+            "identical source should share one leaf engine"
+        );
+        assert_eq!(first.source(), second.source());
+        let input = "hello world";
+        assert_eq!(first.match_input(input, 0), second.match_input(input, 0));
+        // Distinct sources stay distinct.
+        let other = compiler
+            .regex_leaf("[0-9]+".to_string(), None)
+            .expect("other leaf compiles");
+        assert_ne!(first.cache_id, other.cache_id);
     }
 }

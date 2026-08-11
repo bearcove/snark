@@ -1,0 +1,15 @@
+{
+  "name": "precompiled_fixture",
+  "rules": {
+    "document": {
+      "type": "REPEAT1",
+      "content": {
+        "type": "CHOICE",
+        "members": [
+          { "type": "STRING", "value": "let" },
+          { "type": "PATTERN", "value": "[a-z]+", "flags": "i" }
+        ]
+      }
+    }
+  }
+}

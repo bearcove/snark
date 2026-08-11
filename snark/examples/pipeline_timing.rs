@@ -146,6 +146,13 @@ fn main() {
     println!("grammar: {}", grammar_js.display());
     println!("sample:  {} ({} bytes)", sample.display(), input.len());
     println!("grammar.json: {json_bytes} bytes\n");
+    println!(
+        "table shape: item_sets={} states={} transitions={} conflicts={}",
+        table.item_sets().len(),
+        table.states().len(),
+        table.transitions().len(),
+        table.conflicts().len()
+    );
 
     let rows = [
         ("grammar.js -> json (boa)", t_emit),
