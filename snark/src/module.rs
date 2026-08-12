@@ -792,6 +792,21 @@ impl BorrowedSnarkModule<'_> {
     pub fn runtime_ranges_borrow(&self, bytes: &[u8]) -> bool {
         std::ptr::eq(self.bytes.as_ptr(), bytes.as_ptr()) && self.bytes.len() == bytes.len()
     }
+
+    /// Runtime parser grammar obtained from module constants.
+    pub const fn parser_grammar(&self) -> &ParserGrammar {
+        &self.parser_grammar
+    }
+
+    /// Runtime-only LR/GLR table used with the borrowed fact ranges.
+    pub const fn parse_table(&self) -> &ParseTable {
+        &self.parse_table
+    }
+
+    /// Admitted Weavy parser and lexer plan.
+    pub const fn plan(&self) -> &WeavyParsePlan {
+        &self.plan
+    }
 }
 
 impl SnarkModule {
