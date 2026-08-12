@@ -41,22 +41,23 @@ regex-automata = { version = "0.4.14", default-features = false, features = ["st
 smallvec = { version = "1.15", default-features = false }
 unicode-width = "0.2.2"
 wasm-bindgen = "0.2"
-weavy = { git = "https://github.com/bearcove/weavy", rev = "743a7abe8f999ab4122df1cc02e2441849210a23" }
-weavy-phon = { path = "../weavy-module-phase2/weavy-phon" }
-phon = { path = "../phon/rust/phon" }
-phon-schema = { path = "../phon/rust/phon-schema" }
-phon-storage = { path = "../phon/rust/phon-storage" }
+weavy = { git = "https://github.com/bearcove/weavy", rev = "fefef61630ef3d929e5d3b07a4cc26354427f3d3" }
+weavy-phon = { git = "https://github.com/bearcove/weavy", rev = "fefef61630ef3d929e5d3b07a4cc26354427f3d3" }
+phon = { git = "https://github.com/bearcove/phon", rev = "fe15715e345b72d07543fae4135f8b56cff92433" }
+phon-schema = { git = "https://github.com/bearcove/phon", rev = "fe15715e345b72d07543fae4135f8b56cff92433" }
+phon-storage = { git = "https://github.com/bearcove/phon", rev = "fe15715e345b72d07543fae4135f8b56cff92433" }
 
 [patch.crates-io]
-copypatch = { git = "https://github.com/bearcove/weavy", rev = "743a7abe8f999ab4122df1cc02e2441849210a23" }
-taxon = { git = "https://github.com/bearcove/weavy", rev = "743a7abe8f999ab4122df1cc02e2441849210a23" }
-weavy = { git = "https://github.com/bearcove/weavy", rev = "743a7abe8f999ab4122df1cc02e2441849210a23" }
-weavy-phon = { path = "../weavy-module-phase2/weavy-phon" }
+copypatch = { path = "../weavy/copypatch" }
+taxon = { path = "../weavy/taxon" }
+weavy = { path = "../weavy/weavy" }
+weavy-phon = { path = "../weavy/weavy-phon" }
 
 [patch."https://github.com/bearcove/weavy"]
-copypatch = { path = "../weavy-module-phase2/copypatch" }
-taxon = { path = "../weavy-module-phase2/taxon" }
-weavy = { path = "../weavy-module-phase2/weavy" }
+copypatch = { path = "../weavy/copypatch" }
+taxon = { path = "../weavy/taxon" }
+weavy = { path = "../weavy/weavy" }
+weavy-phon = { path = "../weavy/weavy-phon" }
 
 
 [workspace.lints.rust]
