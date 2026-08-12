@@ -22,7 +22,7 @@ use weavy_phon::{
 
 use crate::artifact::{ArtifactBuildError, GrammarFingerprint, ParserArtifactBuilder};
 use crate::lower::weavy::{
-    BorrowedRuntimeParserFacts, WeavyParseError, WeavyParsePlan, WeavyParsePlanData,
+    BorrowedRuntimeParserFacts, WeavyModulePlanData, WeavyParseError, WeavyParsePlan,
     WeavyParseReport, parse_borrowed_weavy_with_report_and_scanner,
     parse_prepared_weavy_recovering_with_report_and_scanner,
     parse_prepared_weavy_with_report_and_scanner,
@@ -59,7 +59,7 @@ const RANGE_VALID_SYMBOL_EXTERNALS: u32 = 13;
 struct SnarkModuleData {
     grammar_fingerprint: GrammarFingerprint,
     parser_grammar: ParserGrammar,
-    parse_plan: WeavyParsePlanData,
+    module_plan: WeavyModulePlanData,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -826,10 +826,10 @@ impl SnarkModule {
         let data = SnarkModuleData {
             grammar_fingerprint: self.grammar_fingerprint,
             parser_grammar: self.parser_grammar.clone(),
-            parse_plan: self.plan.artifact_data(),
+            module_plan: self.plan.module_artifact_data(),
         };
         let grammar = api::encode(&data.parser_grammar).map_err(SnarkModuleError::Phon)?;
-        let plan = api::encode(&data.parse_plan).map_err(SnarkModuleError::Phon)?;
+        let plan = api::encode(&data.module_plan).map_err(SnarkModuleError::Phon)?;
         let ranges = RuntimeRanges::from_runtime(
             self.grammar_fingerprint,
             &self.parser_grammar,
@@ -860,7 +860,6 @@ impl SnarkModule {
         weavy_phon::save::<SnarkCodec>(&module).map_err(SnarkModuleError::Codec)
     }
 
-
     /// Load a Snark module while borrowing all dense runtime fact rows from `bytes`.
     pub fn load_borrowed(bytes: &[u8]) -> Result<BorrowedSnarkModule<'_>, SnarkModuleError> {
         let module =
@@ -876,9 +875,9 @@ impl SnarkModule {
         }
         let parser_grammar: ParserGrammar =
             api::decode(constants[1].bytes()).map_err(SnarkModuleError::Phon)?;
-        let parse_data: WeavyParsePlanData =
+        let parse_data: WeavyModulePlanData =
             api::decode(constants[2].bytes()).map_err(SnarkModuleError::Phon)?;
-        let plan = WeavyParsePlan::from_artifact_data(parse_data)?;
+        let plan = WeavyParsePlan::from_module_artifact_data(parse_data)?;
         let parse_table = ParseTable::default();
         let ranges = [
             module.dense_range(RANGE_RUNTIME_HEADER as usize),
@@ -1029,7 +1028,7 @@ impl SnarkModule {
             api::encode(&self.parser_grammar)
                 .map_err(SnarkModuleError::Phon)?
                 .len(),
-            api::encode(&self.plan.artifact_data())
+            api::encode(&self.plan.module_artifact_data())
                 .map_err(SnarkModuleError::Phon)?
                 .len(),
         ])

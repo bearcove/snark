@@ -21,7 +21,7 @@ use crate::{
 
 const ARTIFACT_MAGIC: [u8; 8] = *b"SNARKPAR";
 /// Current binary parser artifact envelope and payload format version.
-pub const PARSER_ARTIFACT_FORMAT_VERSION: u32 = 1;
+pub const PARSER_ARTIFACT_FORMAT_VERSION: u32 = 2;
 const ARTIFACT_COMPILER_VERSION: &str =
     concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
 const HEADER_LEN: usize = 8 + 4 + 32 + 32;
@@ -232,7 +232,12 @@ impl ParserArtifact {
             ));
         }
         validate_loaded_data(&payload.parser_grammar, &payload.parse_table)?;
-        let plan = WeavyParsePlan::from_artifact_data(payload.weavy_plan).map_err(|source| {
+        let plan = WeavyParsePlan::from_artifact_data(
+            payload.weavy_plan,
+            &payload.parser_grammar,
+            &payload.parse_table,
+        )
+        .map_err(|source| {
             ArtifactLoadError::new(ArtifactLoadErrorKind::Plan {
                 message: source.to_string(),
             })

@@ -1838,12 +1838,52 @@ pub fn empty_lowered() -> SnarkWeavyLowered {
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
 /// Serializable runtime-only parser and lexer plan data.
 pub struct WeavyParsePlanData {
+    parser_program: WeavyParserProgramData,
     lexer_program: WeavyLexerProgramData,
     resolved_cst_names: ResolvedCstNamesData,
     production_dynamic_precedence: Vec<i32>,
     extra_nodes: Vec<RuntimeWeavyExtraNodeData>,
 }
 
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+struct WeavyParserProgramData {
+    root: Vec<WeavyOpData>,
+    blocks: Vec<Vec<WeavyOpData>>,
+    state_blocks: Vec<u32>,
+    state_block_refs: Vec<usize>,
+    action_blocks: Vec<Vec<Vec<WeavyParserActionBlockData>>>,
+}
+
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+struct WeavyParserActionBlockData {
+    action: parser_ir::ParseAction,
+    block_ref: usize,
+}
+
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+#[repr(u8)]
+enum WeavyOpData {
+    CallBlock {
+        block: usize,
+        base_offset: usize,
+    },
+    CallBlockThen {
+        block: usize,
+        then: usize,
+        base_offset: usize,
+    },
+    Return,
+    Intrinsic(SnarkIntrinsic),
+}
+
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+/// Compact non-table plan data stored by borrowed `.weavy` modules.
+pub struct WeavyModulePlanData {
+    lexer_program: WeavyLexerProgramData,
+    resolved_cst_names: ResolvedCstNamesData,
+    production_dynamic_precedence: Vec<i32>,
+    extra_nodes: Vec<RuntimeWeavyExtraNodeData>,
+}
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
 struct ResolvedCstNamesData {
     fields: Vec<String>,
@@ -1893,14 +1933,12 @@ impl ResolvedCstNamesData {
     }
 }
 
-
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
 struct RuntimeWeavyExtraNodeData {
     lookahead: parser_ir::LookaheadSymbol,
     kind: String,
     public_node: parser_ir::PublicNodeKindId,
 }
-
 
 /// Lowered parser program plus dispatch metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2007,7 +2045,226 @@ impl WeavyParserProgram {
                 block: block.index(),
             })
     }
+}
 
+impl WeavyParserProgram {
+    #[cfg(feature = "json-import")]
+    fn artifact_data(&self) -> WeavyParserProgramData {
+        WeavyParserProgramData {
+            root: self
+                .dense
+                .program
+                .iter()
+                .map(WeavyOpData::from_runtime)
+                .collect(),
+            blocks: self
+                .dense
+                .blocks
+                .iter()
+                .map(|block| block.iter().map(WeavyOpData::from_runtime).collect())
+                .collect(),
+            state_blocks: self.state_blocks.iter().map(|block| block.get()).collect(),
+            state_block_refs: self
+                .state_block_refs
+                .iter()
+                .map(|block| block.index())
+                .collect(),
+            action_blocks: self
+                .action_blocks
+                .iter()
+                .map(|rows| {
+                    rows.iter()
+                        .map(|blocks| {
+                            blocks
+                                .iter()
+                                .map(|block| WeavyParserActionBlockData {
+                                    action: block.action,
+                                    block_ref: block.block_ref.index(),
+                                })
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect(),
+        }
+    }
+
+    fn from_artifact_data(
+        data: WeavyParserProgramData,
+        parser: &parser_ir::ParserGrammar,
+        table: &parser_ir::ParseTable,
+    ) -> Result<Self, WeavyParseError> {
+        let dense = DenseSnarkWeavyLowered::new(
+            data.root
+                .into_iter()
+                .map(WeavyOpData::into_runtime)
+                .collect::<Result<Vec<_>, _>>()?,
+            data.blocks
+                .into_iter()
+                .map(|block| {
+                    block
+                        .into_iter()
+                        .map(WeavyOpData::into_runtime)
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        let state_blocks = data
+            .state_blocks
+            .into_iter()
+            .map(|block| SnarkBlockId::from_index(block as usize))
+            .collect::<Vec<_>>();
+        let lowered = dense_to_symbolic_lowered(&dense, &state_blocks)?;
+        let public_node_kind_names = parser
+            .public_node_kinds()
+            .iter()
+            .map(|kind| Arc::<str>::from(kind.name()))
+            .collect::<Vec<_>>();
+        let alias_names = parser
+            .aliases()
+            .iter()
+            .map(|alias| Arc::<str>::from(alias.value()))
+            .collect::<Vec<_>>();
+        Ok(Self {
+            lowered,
+            dense,
+            state_blocks,
+            state_block_refs: data
+                .state_block_refs
+                .into_iter()
+                .map(BlockRef::new)
+                .collect(),
+            action_blocks: data
+                .action_blocks
+                .into_iter()
+                .map(|rows| {
+                    rows.into_iter()
+                        .map(|blocks| {
+                            blocks
+                                .into_iter()
+                                .map(|block| WeavyParserActionBlock {
+                                    action: block.action,
+                                    block_ref: BlockRef::new(block.block_ref),
+                                })
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect(),
+            action_entry_index: RuntimeWeavyStateActionEntryIndex::new(table),
+            goto_index: RuntimeWeavyStateGotoIndex::new(table),
+            extra_node_index: RuntimeWeavyExtraNodeIndex::new(parser, &public_node_kind_names),
+            public_node_kind_names,
+            alias_names,
+        })
+    }
+}
+
+impl WeavyOpData {
+    #[cfg(feature = "json-import")]
+    fn from_runtime(op: &DenseSnarkWeavyOp) -> Self {
+        match op {
+            WeavyOp::Control(ControlOp::CallBlock { block, base_offset }) => Self::CallBlock {
+                block: block.index(),
+                base_offset: *base_offset,
+            },
+            WeavyOp::Control(ControlOp::CallBlockThen {
+                block,
+                then,
+                base_offset,
+            }) => Self::CallBlockThen {
+                block: block.index(),
+                then: then.index(),
+                base_offset: *base_offset,
+            },
+            WeavyOp::Control(ControlOp::Return) => Self::Return,
+            WeavyOp::Intrinsic(intrinsic) => Self::Intrinsic(intrinsic.clone()),
+            _ => unreachable!("Snark parser programs only contain control and intrinsic ops"),
+        }
+    }
+
+    fn into_runtime(self) -> Result<DenseSnarkWeavyOp, WeavyParseError> {
+        Ok(match self {
+            Self::CallBlock { block, base_offset } => WeavyOp::Control(ControlOp::CallBlock {
+                block: BlockRef::new(block),
+                base_offset,
+            }),
+            Self::CallBlockThen {
+                block,
+                then,
+                base_offset,
+            } => WeavyOp::Control(ControlOp::CallBlockThen {
+                block: BlockRef::new(block),
+                then: BlockRef::new(then),
+                base_offset,
+            }),
+            Self::Return => WeavyOp::Control(ControlOp::Return),
+            Self::Intrinsic(intrinsic) => WeavyOp::Intrinsic(intrinsic),
+        })
+    }
+}
+
+fn dense_to_symbolic_lowered(
+    dense: &DenseSnarkWeavyLowered,
+    state_blocks: &[SnarkBlockId],
+) -> Result<SnarkWeavyLowered, WeavyParseError> {
+    let block_ids = (0..dense.blocks.len())
+        .map(SnarkBlockId::from_index)
+        .collect::<Vec<_>>();
+    let map_op = |op: &DenseSnarkWeavyOp| -> Result<SnarkWeavyOp, WeavyParseError> {
+        Ok(match op {
+            WeavyOp::Control(ControlOp::CallBlock { block, base_offset }) => {
+                WeavyOp::Control(ControlOp::CallBlock {
+                    block: *block_ids.get(block.index()).ok_or(
+                        WeavyParseError::MissingDenseRuntimeBlock {
+                            block: block.index(),
+                        },
+                    )?,
+                    base_offset: *base_offset,
+                })
+            }
+            WeavyOp::Control(ControlOp::CallBlockThen {
+                block,
+                then,
+                base_offset,
+            }) => WeavyOp::Control(ControlOp::CallBlockThen {
+                block: *block_ids.get(block.index()).ok_or(
+                    WeavyParseError::MissingDenseRuntimeBlock {
+                        block: block.index(),
+                    },
+                )?,
+                then: *block_ids.get(then.index()).ok_or(
+                    WeavyParseError::MissingDenseRuntimeBlock {
+                        block: then.index(),
+                    },
+                )?,
+                base_offset: *base_offset,
+            }),
+            WeavyOp::Control(ControlOp::Return) => WeavyOp::Control(ControlOp::Return),
+            WeavyOp::Intrinsic(intrinsic) => WeavyOp::Intrinsic(intrinsic.clone()),
+            _ => return Err(WeavyParseError::UnsupportedCanonicalOp),
+        })
+    };
+    let mut lowered = WeavyLowered::new(
+        dense
+            .program
+            .iter()
+            .map(map_op)
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    for (index, block) in dense.blocks.iter().enumerate() {
+        lowered.blocks.insert(
+            block_ids[index],
+            block.iter().map(map_op).collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    if state_blocks
+        .iter()
+        .any(|block| block.get() as usize >= dense.blocks.len())
+    {
+        return Err(WeavyParseError::UnsupportedCanonicalOp);
+    }
+    Ok(lowered)
 }
 
 fn loaded_runtime_weavy_parser_program(
@@ -2041,13 +2298,9 @@ fn loaded_runtime_weavy_parser_program(
             .into_iter()
             .map(Arc::<str>::from)
             .collect(),
-        alias_names: alias_names
-            .into_iter()
-            .map(Arc::<str>::from)
-            .collect(),
+        alias_names: alias_names.into_iter().map(Arc::<str>::from).collect(),
     }
 }
-
 
 fn dense_snark_intrinsic_semantic_stats(
     lowered: &DenseSnarkWeavyLowered,
@@ -2365,6 +2618,7 @@ impl WeavyParsePlan {
     /// Extract runtime-only plan data for a durable module constant.
     pub fn artifact_data(&self) -> WeavyParsePlanData {
         WeavyParsePlanData {
+            parser_program: self.program.artifact_data(),
             lexer_program: self.lexer_program.artifact_data(),
             resolved_cst_names: ResolvedCstNamesData::from_runtime(&self.resolved_cst_names),
             production_dynamic_precedence: self.production_dynamic_precedence.clone(),
@@ -2382,8 +2636,62 @@ impl WeavyParsePlan {
         }
     }
 
-    /// Reconstruct the non-table runtime plan data from admitted module constants.
-    pub fn from_artifact_data(data: WeavyParsePlanData) -> Result<Self, WeavyParseError> {
+    /// Extract compact non-table plan data for a borrowed `.weavy` module.
+    pub fn module_artifact_data(&self) -> WeavyModulePlanData {
+        WeavyModulePlanData {
+            lexer_program: self.lexer_program.artifact_data(),
+            resolved_cst_names: ResolvedCstNamesData::from_runtime(&self.resolved_cst_names),
+            production_dynamic_precedence: self.production_dynamic_precedence.clone(),
+            extra_nodes: self
+                .program
+                .extra_node_index
+                .nodes
+                .iter()
+                .map(|(lookahead, node)| RuntimeWeavyExtraNodeData {
+                    lookahead: *lookahead,
+                    kind: node.kind.to_string(),
+                    public_node: node.public_node,
+                })
+                .collect(),
+        }
+    }
+
+    /// Reconstruct a complete runtime plan for legacy owned artifacts.
+    pub fn from_artifact_data(
+        data: WeavyParsePlanData,
+        parser: &parser_ir::ParserGrammar,
+        table: &parser_ir::ParseTable,
+    ) -> Result<Self, WeavyParseError> {
+        let program = WeavyParserProgram::from_artifact_data(data.parser_program, parser, table)?;
+        let lexer_program = WeavyLexerProgram::from_artifact_data(data.lexer_program)?;
+        let auto_close_index = RuntimeWeavyAutoCloseIndex::from_lexer_program(&lexer_program);
+        #[cfg(all(
+            snark_jit_active,
+            any(
+                all(target_os = "macos", target_arch = "aarch64"),
+                all(target_os = "linux", target_arch = "x86_64")
+            )
+        ))]
+        let hostcall_blocks = Arc::new(RuntimeWeavyHostCallBlockCache::new(&program));
+        Ok(Self {
+            program,
+            lexer_program,
+            resolved_cst_names: data.resolved_cst_names.into_runtime(),
+            production_dynamic_precedence: data.production_dynamic_precedence,
+            auto_close_index,
+            #[cfg(all(
+                snark_jit_active,
+                any(
+                    all(target_os = "macos", target_arch = "aarch64"),
+                    all(target_os = "linux", target_arch = "x86_64")
+                )
+            ))]
+            hostcall_blocks,
+        })
+    }
+
+    /// Reconstruct the compact non-table runtime plan used by borrowed modules.
+    pub fn from_module_artifact_data(data: WeavyModulePlanData) -> Result<Self, WeavyParseError> {
         let lexer_program = WeavyLexerProgram::from_artifact_data(data.lexer_program)?;
         let auto_close_index = RuntimeWeavyAutoCloseIndex::from_lexer_program(&lexer_program);
         let public_node_kind_names = data.resolved_cst_names.public_nodes.clone();
@@ -3663,9 +3971,11 @@ impl WeavyLexerCompiler {
             return None;
         }
         if let Some(set) = self.literal_sets.get(&entries) {
+            WeavyLiteralSet::assign_terminal_slots(terminals, &entries);
             return Some(set.clone());
         }
         let set = WeavyLiteralSet::from_entries(&entries)?;
+        WeavyLiteralSet::assign_terminal_slots(terminals, &entries);
         self.literal_sets.insert(entries, set.clone());
         Some(set)
     }
@@ -5161,6 +5471,17 @@ impl WeavyLiteralSet {
         entries
     }
 
+    fn assign_terminal_slots(terminals: &mut [WeavyLexTerminal], entries: &[WeavyLiteralSetEntry]) {
+        for terminal in terminals.iter_mut() {
+            terminal.direct_literal_index = None;
+        }
+        for (set_index, entry) in entries.iter().enumerate() {
+            if let Some(terminal) = terminals.get_mut(entry.terminal_index) {
+                terminal.direct_literal_index = Some(set_index);
+            }
+        }
+    }
+
     fn from_entries(entries: &[WeavyLiteralSetEntry]) -> Option<Self> {
         if entries.is_empty() {
             return None;
@@ -5624,7 +5945,6 @@ impl RuntimeWeavyStateActionEntryIndex {
             .get(state.get() as usize)
             .and_then(|entries| entries.get(lookahead))
     }
-
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -5694,7 +6014,6 @@ impl RuntimeWeavyStateActionEntries {
         entries
     }
 
-
     fn get(&self, lookahead: parser_ir::LookaheadSymbol) -> Option<RuntimeWeavyActionEntry> {
         match lookahead {
             parser_ir::LookaheadSymbol::Terminal(terminal) => self
@@ -5752,7 +6071,6 @@ impl RuntimeWeavyStateGotoIndex {
             .and_then(|gotos| gotos.get(nonterminal))
     }
 }
-
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct RuntimeWeavyStateGotos {

@@ -43,6 +43,7 @@ fn precompiled_artifact_round_trips_and_matches_live_parse_behavior() {
 
     let bytes = built.encode().unwrap();
     let loaded = ParserArtifact::load(&bytes, built.grammar_fingerprint()).unwrap();
+    assert_eq!(loaded.parse_table().states(), runtime_table.states());
     let loaded_tree = parse_prepared_weavy_tree(
         loaded.plan(),
         loaded.parser_grammar(),
