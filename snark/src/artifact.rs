@@ -232,12 +232,7 @@ impl ParserArtifact {
             ));
         }
         validate_loaded_data(&payload.parser_grammar, &payload.parse_table)?;
-        let plan = WeavyParsePlan::from_artifact_data(
-            payload.weavy_plan,
-            &payload.parser_grammar,
-            &payload.parse_table,
-        )
-        .map_err(|source| {
+        let plan = WeavyParsePlan::from_artifact_data(payload.weavy_plan).map_err(|source| {
             ArtifactLoadError::new(ArtifactLoadErrorKind::Plan {
                 message: source.to_string(),
             })

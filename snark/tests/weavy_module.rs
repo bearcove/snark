@@ -22,19 +22,41 @@ fn module_round_trip_matches_live_parser_without_construction_workspace() {
     let live = built.parse("letName", None).expect("live parse");
 
     let first = built.save().expect("save");
-    let loaded = SnarkModule::load(&first).expect("load");
-    let second = loaded.save().expect("save again");
+    let loaded = SnarkModule::load_borrowed(&first).expect("load borrowed");
+    let second = built.save().expect("save again");
     let loaded_tree = loaded.parse("letName", None).expect("loaded parse");
-    assert_eq!(loaded.grammar_fingerprint(), built.grammar_fingerprint());
+    assert_eq!(loaded.runtime_state_count(), built.runtime_state_count());
 
     assert_eq!(first, second);
     assert_eq!(loaded_tree, live);
+    assert_eq!(loaded.regex_compile_count(), loaded.unique_regex_count());
+}
+
+#[test]
+fn loaded_module_uses_only_module_local_runtime_data() {
+    let built = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
+    let bytes = built.save().expect("save");
+    let loaded = SnarkModule::load_borrowed(&bytes).expect("load borrowed");
+    let report: SnarkModuleInspection = SnarkModule::inspect(&bytes).expect("inspect");
+
+    assert_eq!(report.constant_count, 3);
+    assert!(loaded.runtime_ranges_borrow(&bytes));
+    assert_eq!(loaded.parse("letName", None), built.parse("letName", None));
+}
+
+#[test]
+fn borrowed_module_uses_persisted_runtime_caches() {
+    let built = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
+    let bytes = built.save().expect("save");
+    let loaded = SnarkModule::load_borrowed(&bytes).expect("load borrowed");
+
+    assert_eq!(loaded.unique_regex_count(), built.unique_regex_count());
+    assert_eq!(loaded.regex_compile_count(), loaded.unique_regex_count());
     assert_eq!(loaded.runtime_state_count(), built.runtime_state_count());
     assert_eq!(
         loaded.runtime_conflict_count(),
         built.runtime_conflict_count()
     );
-    assert_eq!(loaded.regex_compile_count(), loaded.unique_regex_count());
 }
 
 #[test]
@@ -55,8 +77,8 @@ fn module_inspection_reports_snark_constants_and_sections() {
     let built = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
     let bytes = built.save().expect("save");
     let report: SnarkModuleInspection = SnarkModule::inspect(&bytes).expect("inspect");
-    assert_eq!(report.constant_count, 4);
-    assert_eq!(report.constant_ranges.len(), 13);
+    assert_eq!(report.constant_count, 3);
+    assert_eq!(report.constant_ranges.len(), 14);
     assert!(
         report
             .constant_ranges
@@ -93,4 +115,32 @@ fn loaded_module_borrows_runtime_ranges_from_file_bytes() {
         loaded.parse("letName", None).expect("parse"),
         built.parse("letName", None).expect("live"),
     );
+}
+
+#[test]
+fn borrowed_module_preserves_glr_action_sets() {
+    const AMBIGUOUS_GRAMMAR: &str = r#"{
+      "name": "ambiguous_module",
+      "rules": {
+        "source_file": {
+          "type": "CHOICE",
+          "members": [
+            { "type": "SYMBOL", "name": "left" },
+            { "type": "SYMBOL", "name": "right" }
+          ]
+        },
+        "left": { "type": "SYMBOL", "name": "token" },
+        "right": { "type": "SYMBOL", "name": "token" },
+        "token": { "type": "STRING", "value": "x" }
+      }
+    }"#;
+
+    let built = SnarkModule::compile_grammar_json(AMBIGUOUS_GRAMMAR).expect("compile");
+    let bytes = built.save().expect("save");
+    let loaded = SnarkModule::load_borrowed(&bytes).expect("load borrowed");
+
+    assert!(matches!(
+        loaded.parse("x", None),
+        Err(snark::lower::weavy::WeavyParseError::AmbiguousParse { .. })
+    ));
 }

@@ -2637,6 +2637,18 @@ impl ReservedContext {
     }
 }
 
+/// Borrowed external-symbol membership exposed to scanner hosts.
+pub trait ExternalValidSymbols {
+    /// Number of valid external symbols.
+    fn len(&self) -> usize;
+    /// Whether no external symbols are valid.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Valid external symbol at `index`.
+    fn get(&self, index: usize) -> Option<ExternalId>;
+}
+
 impl ExternalValidSymbols for ValidSymbolSet {
     fn len(&self) -> usize {
         self.externals.len()
@@ -4407,12 +4419,8 @@ pub struct ExternalScanRequest<'a> {
     scanner_snapshot: Option<ScannerSnapshotId>,
 }
 
-pub(crate) trait ExternalValidSymbols {
-    fn len(&self) -> usize;
-    fn get(&self, index: usize) -> Option<ExternalId>;
-}
-
 impl ExternalScanRequest<'_> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) const fn new<'a>(
         state: ParseStateId,
         external: ExternalId,
@@ -4455,22 +4463,22 @@ impl ExternalScanRequest<'_> {
         self.external_name
     }
 
-    /// Whether the parser state supplied an explicit valid-symbol set.
+    /// Whether a valid-symbol set is present.
     pub const fn has_valid_symbols(&self) -> bool {
         self.valid_symbols.is_some()
     }
 
-    /// Number of external symbols in the explicit valid-symbol set.
+    /// Number of valid external symbols.
     pub fn valid_symbol_count(&self) -> Option<usize> {
         self.valid_symbols.map(ExternalValidSymbols::len)
     }
 
-    /// External symbol at `index` in the explicit valid-symbol set.
+    /// Valid external symbol at `index`.
     pub fn valid_symbol(&self, index: usize) -> Option<ExternalId> {
         self.valid_symbols.and_then(|symbols| symbols.get(index))
     }
 
-    /// Whether an external symbol belongs to the explicit valid-symbol set.
+    /// Whether `external` is in the valid-symbol set, if one is present.
     pub fn is_valid_symbol(&self, external: ExternalId) -> Option<bool> {
         let symbols = self.valid_symbols?;
         Some((0..symbols.len()).any(|index| symbols.get(index) == Some(external)))
@@ -5162,6 +5170,11 @@ impl ResolvedCstTree {
         self.items.is_empty()
     }
 
+    /// Source text backing every item range in this tree.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
     /// Number of root items.
     pub fn root_count(&self) -> usize {
         self.roots.len()
@@ -5315,6 +5328,11 @@ impl<'a> ResolvedCstTreeNode<'a> {
             .has_text
             .then(|| source_slice(&self.tree.source, self.item().bytes))
             .flatten()
+    }
+
+    /// Source text backing this node's byte range.
+    pub fn source(&self) -> &'a str {
+        &self.tree.source
     }
 
     /// Child items in source order.
@@ -5518,6 +5536,61 @@ impl ResolvedCstNames {
         }
     }
 
+    pub(crate) fn fields(&self) -> impl Iterator<Item = &str> {
+        self.fields.iter().map(AsRef::as_ref)
+    }
+
+    pub(crate) fn public_nodes(&self) -> impl Iterator<Item = &str> {
+        self.public_nodes.iter().map(AsRef::as_ref)
+    }
+
+    pub(crate) fn aliases(&self) -> impl Iterator<Item = &str> {
+        self.aliases.iter().map(AsRef::as_ref)
+    }
+
+    pub(crate) fn terminals(&self) -> impl Iterator<Item = &str> {
+        self.terminals.iter().map(AsRef::as_ref)
+    }
+
+    pub(crate) fn nonterminals(&self) -> impl Iterator<Item = &str> {
+        self.nonterminals.iter().map(AsRef::as_ref)
+    }
+
+    pub(crate) fn externals(&self) -> impl Iterator<Item = Option<&str>> {
+        self.externals.iter().map(|name| name.as_deref())
+    }
+
+    pub(crate) fn special_names(&self) -> (&str, &str, &str, &str) {
+        (&self.eof, &self.error, &self.missing, &self.recovery)
+    }
+
+    pub(crate) fn from_owned_parts(parts: ResolvedCstNameParts) -> Self {
+        Self {
+            fields: parts.fields.into_iter().map(Arc::<str>::from).collect(),
+            public_nodes: parts
+                .public_nodes
+                .into_iter()
+                .map(Arc::<str>::from)
+                .collect(),
+            aliases: parts.aliases.into_iter().map(Arc::<str>::from).collect(),
+            terminals: parts.terminals.into_iter().map(Arc::<str>::from).collect(),
+            nonterminals: parts
+                .nonterminals
+                .into_iter()
+                .map(Arc::<str>::from)
+                .collect(),
+            externals: parts
+                .externals
+                .into_iter()
+                .map(|name| name.map(Arc::<str>::from))
+                .collect(),
+            eof: Arc::<str>::from(parts.eof),
+            error: Arc::<str>::from(parts.error),
+            missing: Arc::<str>::from(parts.missing),
+            recovery: Arc::<str>::from(parts.recovery),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn empty_for_tests() -> Self {
         Self {
@@ -5533,6 +5606,19 @@ impl ResolvedCstNames {
             recovery: Arc::<str>::from("RECOVERY"),
         }
     }
+}
+
+pub(crate) struct ResolvedCstNameParts {
+    pub(crate) fields: Vec<String>,
+    pub(crate) public_nodes: Vec<String>,
+    pub(crate) aliases: Vec<String>,
+    pub(crate) terminals: Vec<String>,
+    pub(crate) nonterminals: Vec<String>,
+    pub(crate) externals: Vec<Option<String>>,
+    pub(crate) eof: String,
+    pub(crate) error: String,
+    pub(crate) missing: String,
+    pub(crate) recovery: String,
 }
 
 impl<'a> ResolvedCstBuilder<'a> {

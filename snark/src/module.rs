@@ -31,7 +31,6 @@ use crate::parser::{ExternalScannerHost, ParseTable, ParserGrammar};
 
 const GRAMMAR_FINGERPRINT_SCHEMA: u64 = 0xc067_9971_e3ea_4a4e;
 const PARSER_GRAMMAR_SCHEMA: u64 = 0x38fe_226c_5a19_8d0e;
-const PARSE_TABLE_SCHEMA: u64 = 0x2746_d4b8_93d0_e2ac;
 const PARSE_PLAN_SCHEMA: u64 = 0x9fa7_5d2c_1b40_a866;
 
 // Durable runtime range contract. Range IDs are module-local and carried by
@@ -44,22 +43,22 @@ const PARSE_PLAN_SCHEMA: u64 = 0x9fa7_5d2c_1b40_a866;
 const RANGE_RUNTIME_HEADER: u32 = 0;
 const RANGE_PARSE_STATES: u32 = 1;
 const RANGE_ACTION_ENTRIES: u32 = 2;
-const RANGE_GOTOS: u32 = 3;
-const RANGE_LEX_MODES: u32 = 4;
-const RANGE_LEX_TERMINALS: u32 = 5;
-const RANGE_LEX_EXTERNALS: u32 = 6;
-const RANGE_PRODUCTIONS: u32 = 7;
-const RANGE_PRODUCTION_STEPS: u32 = 8;
-const RANGE_PRODUCTION_METADATA: u32 = 9;
-const RANGE_EXTERNALS: u32 = 10;
-const RANGE_RESERVED_TERMINALS: u32 = 11;
-const RANGE_VALID_SYMBOL_EXTERNALS: u32 = 12;
+const RANGE_ACTIONS: u32 = 3;
+const RANGE_GOTOS: u32 = 4;
+const RANGE_LEX_MODES: u32 = 5;
+const RANGE_LEX_TERMINALS: u32 = 6;
+const RANGE_LEX_EXTERNALS: u32 = 7;
+const RANGE_PRODUCTIONS: u32 = 8;
+const RANGE_PRODUCTION_STEPS: u32 = 9;
+const RANGE_PRODUCTION_METADATA: u32 = 10;
+const RANGE_EXTERNALS: u32 = 11;
+const RANGE_RESERVED_TERMINALS: u32 = 12;
+const RANGE_VALID_SYMBOL_EXTERNALS: u32 = 13;
 
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
 struct SnarkModuleData {
     grammar_fingerprint: GrammarFingerprint,
     parser_grammar: ParserGrammar,
-    parse_table: ParseTable,
     parse_plan: WeavyParsePlanData,
 }
 
@@ -84,20 +83,25 @@ struct ParseStateRow {
     goto_count: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ActionEntryRow {
     state: u32,
     lookahead_kind: u8,
     lookahead_a: u32,
     lookahead_b: u32,
     entry_index: u32,
+    first_action: u32,
     action_count: u32,
-    first_action_kind: u8,
-    first_action_a: u32,
-    first_action_b: u32,
-    first_action_c: u32,
-    first_action_d: u32,
-    first_action_e: i32,
+    conflict: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ActionRow {
+    kind: u8,
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+    precedence: i32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GotoRow {
@@ -155,6 +159,7 @@ struct RuntimeRanges {
     header: ConstantRange,
     states: ConstantRange,
     action_entries: ConstantRange,
+    actions: ConstantRange,
     gotos: ConstantRange,
     lex_modes: ConstantRange,
     lex_terminals: ConstantRange,
@@ -255,45 +260,52 @@ impl RuntimeRanges {
                 row
             })
             .collect::<Vec<_>>();
-        let action_entries = table
+        let mut first_action = 0u32;
+        let mut action_entries = Vec::new();
+        for state in table.states() {
+            for (entry_index, entry) in state.entries().iter().enumerate() {
+                let (lookahead_kind, lookahead_a, lookahead_b) =
+                    encode_lookahead(entry.lookahead());
+                let action_count =
+                    u32::try_from(entry.actions().len()).expect("action count overflow");
+                let conflict = table
+                    .conflicts()
+                    .iter()
+                    .find(|conflict| {
+                        conflict.state() == state.id()
+                            && conflict.lookahead() == entry.lookahead()
+                            && conflict.actions() == entry.actions()
+                    })
+                    .map_or(u32::MAX, |conflict| conflict.id().get());
+                action_entries.push(ActionEntryRow {
+                    state: state.id().get(),
+                    lookahead_kind,
+                    lookahead_a,
+                    lookahead_b,
+                    entry_index: u32::try_from(entry_index).expect("action entry overflow"),
+                    first_action,
+                    action_count,
+                    conflict,
+                });
+                first_action += action_count;
+            }
+        }
+        let actions = table
             .states()
             .iter()
-            .flat_map(|state| {
-                state
-                    .entries()
-                    .iter()
-                    .enumerate()
-                    .map(move |(entry_index, entry)| {
-                        let (lookahead_kind, lookahead_a, lookahead_b) =
-                            encode_lookahead(entry.lookahead());
-                        let (
-                            first_action_kind,
-                            first_action_a,
-                            first_action_b,
-                            first_action_c,
-                            first_action_d,
-                            first_action_e,
-                        ) = entry
-                            .actions()
-                            .first()
-                            .copied()
-                            .map_or((u8::MAX, 0, 0, 0, 0, 0), encode_action);
-                        ActionEntryRow {
-                            state: state.id().get(),
-                            lookahead_kind,
-                            lookahead_a,
-                            lookahead_b,
-                            entry_index: u32::try_from(entry_index).expect("action entry overflow"),
-                            action_count: u32::try_from(entry.actions().len())
-                                .expect("action count overflow"),
-                            first_action_kind,
-                            first_action_a,
-                            first_action_b,
-                            first_action_c,
-                            first_action_d,
-                            first_action_e,
-                        }
-                    })
+            .flat_map(|state| state.entries())
+            .flat_map(|entry| entry.actions())
+            .copied()
+            .map(|action| {
+                let (kind, a, b, c, d, precedence) = encode_action(action);
+                ActionRow {
+                    kind,
+                    a,
+                    b,
+                    c,
+                    d,
+                    precedence,
+                }
             })
             .collect::<Vec<_>>();
         let gotos = table
@@ -439,6 +451,7 @@ impl RuntimeRanges {
         let header = dense_range("SnarkRuntimeHeader", &header_rows, &mut schemas)?;
         let states = dense_range("SnarkParseState", &states, &mut schemas)?;
         let action_entries = dense_range("SnarkActionEntry", &action_entries, &mut schemas)?;
+        let actions = dense_range("SnarkAction", &actions, &mut schemas)?;
         let gotos = dense_range("SnarkGoto", &gotos, &mut schemas)?;
         let lex_modes = dense_range("SnarkLexMode", &lex_modes, &mut schemas)?;
         let lex_terminals = dense_range("SnarkLexTerminal", &lex_terminals, &mut schemas)?;
@@ -461,6 +474,7 @@ impl RuntimeRanges {
         Ok(Self {
             header,
             states,
+            actions,
             action_entries,
             gotos,
             lex_modes,
@@ -476,7 +490,7 @@ impl RuntimeRanges {
     }
 
     fn references(&self) -> Vec<ConstantRangeReference> {
-        self.into_ranges_ref()
+        self.ranges_ref()
             .iter()
             .enumerate()
             .map(|(index, range)| {
@@ -489,11 +503,12 @@ impl RuntimeRanges {
             .collect()
     }
 
-    fn into_ranges_ref(&self) -> [&ConstantRange; 13] {
+    fn ranges_ref(&self) -> [&ConstantRange; 14] {
         [
             &self.header,
             &self.states,
             &self.action_entries,
+            &self.actions,
             &self.gotos,
             &self.lex_modes,
             &self.lex_terminals,
@@ -512,6 +527,7 @@ impl RuntimeRanges {
             self.header,
             self.states,
             self.action_entries,
+            self.actions,
             self.gotos,
             self.lex_modes,
             self.lex_terminals,
@@ -644,13 +660,20 @@ dense_row!(
         (lookahead_a, Primitive::U32),
         (lookahead_b, Primitive::U32),
         (entry_index, Primitive::U32),
+        (first_action, Primitive::U32),
         (action_count, Primitive::U32),
-        (first_action_kind, Primitive::U8),
-        (first_action_a, Primitive::U32),
-        (first_action_b, Primitive::U32),
-        (first_action_c, Primitive::U32),
-        (first_action_d, Primitive::U32),
-        (first_action_e, Primitive::I32),
+        (conflict, Primitive::U32),
+    ]
+);
+dense_row!(
+    ActionRow,
+    [
+        (kind, Primitive::U8),
+        (a, Primitive::U32),
+        (b, Primitive::U32),
+        (c, Primitive::U32),
+        (d, Primitive::U32),
+        (precedence, Primitive::I32),
     ]
 );
 dense_row!(
@@ -720,7 +743,6 @@ pub struct SnarkModule {
     plan: WeavyParsePlan,
 }
 /// A loaded Snark module whose runtime fact rows borrow the `.weavy` image.
-
 pub struct BorrowedSnarkModule<'a> {
     bytes: &'a [u8],
     parser_grammar: ParserGrammar,
@@ -744,6 +766,26 @@ impl BorrowedSnarkModule<'_> {
             input,
             external_scanner,
         )
+    }
+
+    /// Number of runtime parse-state rows.
+    pub fn runtime_state_count(&self) -> usize {
+        self.facts.state_count()
+    }
+
+    /// Number of retained GLR conflicts.
+    pub fn runtime_conflict_count(&self) -> usize {
+        self.facts.conflict_count()
+    }
+
+    /// Number of unique regular-expression specifications admitted for this module.
+    pub fn unique_regex_count(&self) -> usize {
+        self.plan.unique_regex_count()
+    }
+
+    /// Number of regular-expression engine compilations performed at admission.
+    pub fn regex_compile_count(&self) -> usize {
+        self.plan.regex_compile_count()
     }
 
     /// Whether the runtime rows refer to the exact supplied module byte slice.
@@ -784,11 +826,9 @@ impl SnarkModule {
         let data = SnarkModuleData {
             grammar_fingerprint: self.grammar_fingerprint,
             parser_grammar: self.parser_grammar.clone(),
-            parse_table: self.parse_table.runtime_clone(),
             parse_plan: self.plan.artifact_data(),
         };
         let grammar = api::encode(&data.parser_grammar).map_err(SnarkModuleError::Phon)?;
-        let table = api::encode(&data.parse_table).map_err(SnarkModuleError::Phon)?;
         let plan = api::encode(&data.parse_plan).map_err(SnarkModuleError::Phon)?;
         let ranges = RuntimeRanges::from_runtime(
             self.grammar_fingerprint,
@@ -813,7 +853,6 @@ impl SnarkModule {
                     data.grammar_fingerprint.to_vec(),
                 ),
                 Constant::new(PARSER_GRAMMAR_SCHEMA, grammar),
-                Constant::new(PARSE_TABLE_SCHEMA, table),
                 Constant::new(PARSE_PLAN_SCHEMA, plan),
             ]),
         )
@@ -821,34 +860,6 @@ impl SnarkModule {
         weavy_phon::save::<SnarkCodec>(&module).map_err(SnarkModuleError::Codec)
     }
 
-    /// Load and admit a Snark module without rebuilding LR tables or lexer plans.
-    pub fn load(bytes: &[u8]) -> Result<Self, SnarkModuleError> {
-        let module = weavy_phon::load::<SnarkCodec>(bytes).map_err(SnarkModuleError::Codec)?;
-        let admitted = ModuleVerifier::new([DialectRequirement::new("snark", 1, 0)])
-            .admit(module)
-            .map_err(SnarkModuleError::Admission)?;
-        let constants = admitted.module().constants();
-        if constants.len() != 4 {
-            return Err(SnarkModuleError::WrongConstantCount(constants.len()));
-        }
-        let grammar_fingerprint: GrammarFingerprint = constants[0]
-            .bytes()
-            .try_into()
-            .map_err(|_| SnarkModuleError::MalformedGrammarFingerprint)?;
-        let parser_grammar: ParserGrammar =
-            api::decode(constants[1].bytes()).map_err(SnarkModuleError::Phon)?;
-        let parse_table: ParseTable =
-            api::decode(constants[2].bytes()).map_err(SnarkModuleError::Phon)?;
-        let parse_data: WeavyParsePlanData =
-            api::decode(constants[3].bytes()).map_err(SnarkModuleError::Phon)?;
-        let plan = WeavyParsePlan::from_artifact_data(parse_data, &parser_grammar, &parse_table)?;
-        Ok(Self {
-            grammar_fingerprint,
-            parser_grammar,
-            parse_table,
-            plan,
-        })
-    }
 
     /// Load a Snark module while borrowing all dense runtime fact rows from `bytes`.
     pub fn load_borrowed(bytes: &[u8]) -> Result<BorrowedSnarkModule<'_>, SnarkModuleError> {
@@ -860,20 +871,20 @@ impl SnarkModule {
             )]))
             .map_err(SnarkModuleError::Admission)?;
         let constants = module.constants();
-        if constants.len() != 4 {
+        if constants.len() != 3 {
             return Err(SnarkModuleError::WrongConstantCount(constants.len()));
         }
         let parser_grammar: ParserGrammar =
             api::decode(constants[1].bytes()).map_err(SnarkModuleError::Phon)?;
-        let parse_table: ParseTable =
-            api::decode(constants[2].bytes()).map_err(SnarkModuleError::Phon)?;
         let parse_data: WeavyParsePlanData =
-            api::decode(constants[3].bytes()).map_err(SnarkModuleError::Phon)?;
-        let plan = WeavyParsePlan::from_artifact_data(parse_data, &parser_grammar, &parse_table)?;
+            api::decode(constants[2].bytes()).map_err(SnarkModuleError::Phon)?;
+        let plan = WeavyParsePlan::from_artifact_data(parse_data)?;
+        let parse_table = ParseTable::default();
         let ranges = [
             module.dense_range(RANGE_RUNTIME_HEADER as usize),
             module.dense_range(RANGE_PARSE_STATES as usize),
             module.dense_range(RANGE_ACTION_ENTRIES as usize),
+            module.dense_range(RANGE_ACTIONS as usize),
             module.dense_range(RANGE_GOTOS as usize),
             module.dense_range(RANGE_LEX_MODES as usize),
             module.dense_range(RANGE_LEX_TERMINALS as usize),
@@ -889,10 +900,11 @@ impl SnarkModule {
             header,
             states,
             action_entries,
+            actions,
             gotos,
             lex_modes,
-            lex_terminals,
-            lex_externals,
+            _lex_terminals,
+            _lex_externals,
             productions,
             production_steps,
             production_metadata,
@@ -905,21 +917,20 @@ impl SnarkModule {
             parser_grammar,
             parse_table,
             plan,
-            facts: BorrowedRuntimeParserFacts::new([
+            facts: BorrowedRuntimeParserFacts::new(
                 header?,
                 states?,
                 action_entries?,
+                actions?,
                 gotos?,
                 lex_modes?,
-                lex_terminals?,
-                lex_externals?,
                 productions?,
                 production_steps?,
                 production_metadata?,
                 externals?,
                 reserved_terminals?,
                 valid_symbol_externals?,
-            ]),
+            ),
         })
     }
 
@@ -1012,13 +1023,10 @@ impl SnarkModule {
     }
 
     /// Encoded PHON sizes of all module constants in module-local ID order.
-    pub fn constant_sizes(&self) -> Result<[usize; 4], SnarkModuleError> {
+    pub fn constant_sizes(&self) -> Result<[usize; 3], SnarkModuleError> {
         Ok([
             self.grammar_fingerprint.len(),
             api::encode(&self.parser_grammar)
-                .map_err(SnarkModuleError::Phon)?
-                .len(),
-            api::encode(&self.parse_table)
                 .map_err(SnarkModuleError::Phon)?
                 .len(),
             api::encode(&self.plan.artifact_data())
