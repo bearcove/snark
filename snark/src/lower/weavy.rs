@@ -3803,8 +3803,8 @@ enum WeavyLexExprData {
 
 #[derive(Clone, Debug)]
 struct WeavyLexerProgram {
-    modes: Vec<WeavyLexModeProgram>,
-    state_modes: Vec<WeavyLexModeProgram>,
+    modes: Vec<Arc<WeavyLexModeProgram>>,
+    state_modes: Vec<Arc<WeavyLexModeProgram>>,
     unique_regex_count: usize,
     regex_compile_count: usize,
 }
@@ -3817,11 +3817,11 @@ impl WeavyLexerProgram {
         let mut compiler = WeavyLexerCompiler::default();
         let modes = modes
             .into_iter()
-            .map(|mode| WeavyLexModeProgram::from_compiled(mode, &mut compiler))
+            .map(|mode| Arc::new(WeavyLexModeProgram::from_compiled(mode, &mut compiler)))
             .collect::<Vec<_>>();
         let terminal_indices = modes
             .iter()
-            .map(WeavyLexModeProgram::terminal_indices)
+            .map(|mode| mode.terminal_indices())
             .collect::<Vec<_>>();
         let state_modes = table
             .states()
@@ -3829,12 +3829,12 @@ impl WeavyLexerProgram {
             .map(|state| {
                 let mode_index = state.lex_mode().get() as usize;
                 let mode = &modes[mode_index];
-                WeavyLexModeProgram::from_state(
+                Arc::new(WeavyLexModeProgram::from_state(
                     state,
                     mode,
                     &terminal_indices[mode_index],
                     &mut compiler,
-                )
+                ))
             })
             .collect();
         let unique_regex_count = compiler.regex_leaves.len();
@@ -3854,11 +3854,12 @@ impl WeavyLexerProgram {
         self.state_modes
             .get(state.get() as usize)
             .or_else(|| self.modes.get(mode.get() as usize))
+            .map(Arc::as_ref)
             .ok_or(RuntimeWeavyStepError::MissingLexMode { mode })
     }
 
     fn modes(&self) -> impl Iterator<Item = &WeavyLexModeProgram> {
-        self.modes.iter()
+        self.modes.iter().map(Arc::as_ref)
     }
 
     fn stats(&self) -> WeavyLexerStats {
@@ -3885,8 +3886,12 @@ impl WeavyLexerProgram {
                 index
             }
         };
-        let mode_ids = self.modes.iter().map(&mut intern).collect::<Vec<_>>();
-        let state_mode_ids = self.state_modes.iter().map(intern).collect();
+        let mode_ids = self
+            .modes
+            .iter()
+            .map(|mode| intern(mode))
+            .collect::<Vec<_>>();
+        let state_mode_ids = self.state_modes.iter().map(|mode| intern(mode)).collect();
         WeavyLexerProgramData {
             modes,
             mode_ids,
@@ -3899,7 +3904,7 @@ impl WeavyLexerProgram {
         let interned = data
             .modes
             .into_iter()
-            .map(|mode| WeavyLexModeProgram::from_artifact_data(mode, &mut compiler))
+            .map(|mode| WeavyLexModeProgram::from_artifact_data(mode, &mut compiler).map(Arc::new))
             .collect::<Result<Vec<_>, _>>()?;
         let resolve = |mode: u32| {
             interned
@@ -18700,7 +18705,7 @@ mod tests {
             },
             production_dynamic_precedence: Vec::new(),
             lexer_program: WeavyLexerProgram {
-                modes: vec![WeavyLexModeProgram {
+                modes: vec![Arc::new(WeavyLexModeProgram {
                     terminals: vec![],
                     non_direct_terminal_indices: vec![],
                     auto_close_terminal_indices: vec![],
@@ -18708,7 +18713,7 @@ mod tests {
                     external_count: 3,
                     direct_literal_set: None,
                     direct_pattern_set: None,
-                }],
+                })],
                 state_modes: vec![],
                 unique_regex_count: 0,
                 regex_compile_count: 0,
@@ -18827,7 +18832,7 @@ mod tests {
         let direct_literal_set = WeavyLiteralSet::from_terminals(&mut terminals);
         let direct_pattern_set = WeavyDirectPatternSet::from_terminals(&mut terminals);
         WeavyLexerProgram {
-            modes: vec![WeavyLexModeProgram {
+            modes: vec![Arc::new(WeavyLexModeProgram {
                 terminals,
                 non_direct_terminal_indices: vec![],
                 auto_close_terminal_indices: vec![],
@@ -18835,11 +18840,32 @@ mod tests {
                 external_count: 0,
                 direct_literal_set,
                 direct_pattern_set,
-            }],
+            })],
             state_modes: vec![],
             unique_regex_count: 1,
             regex_compile_count: 1,
         }
+    }
+
+    #[test]
+    fn artifact_lexer_state_modes_share_interned_runtime_modes() {
+        let program = sample_lexer_program();
+        let mode = program.modes[0].artifact_data();
+        let loaded = WeavyLexerProgram::from_artifact_data(WeavyLexerProgramData {
+            modes: vec![mode],
+            mode_ids: vec![0],
+            state_mode_ids: vec![0, 0],
+        })
+        .expect("load interned lexer modes");
+
+        assert!(std::sync::Arc::ptr_eq(
+            &loaded.modes[0],
+            &loaded.state_modes[0]
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &loaded.state_modes[0],
+            &loaded.state_modes[1]
+        ));
     }
 
     #[test]
