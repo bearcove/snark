@@ -22,8 +22,9 @@ use weavy_phon::{
 
 use crate::artifact::{ArtifactBuildError, GrammarFingerprint, ParserArtifactBuilder};
 use crate::lower::weavy::{
-    BorrowedRuntimeParserFacts, WeavyModulePlanData, WeavyParseError, WeavyParsePlan,
-    WeavyParseReport, parse_borrowed_weavy_with_report_and_scanner,
+    BorrowedRuntimeParserFacts, BorrowedWeavyParseSession, WeavyModulePlanData, WeavyParseError,
+    WeavyParsePlan, WeavyParseReport, parse_borrowed_weavy_recovering_with_report_and_scanner,
+    parse_borrowed_weavy_with_report_and_scanner,
     parse_prepared_weavy_recovering_with_report_and_scanner,
     parse_prepared_weavy_with_report_and_scanner,
 };
@@ -768,6 +769,34 @@ impl BorrowedSnarkModule<'_> {
         )
     }
 
+    /// Parse input with skip-invalid recovery through borrowed runtime facts.
+    pub fn parse_recovering(
+        &self,
+        input: &str,
+        external_scanner: Option<&dyn ExternalScannerHost>,
+    ) -> Result<WeavyParseReport, WeavyParseError> {
+        parse_borrowed_weavy_recovering_with_report_and_scanner(
+            &self.plan,
+            &self.parser_grammar,
+            &self.parse_table,
+            &self.facts,
+            input,
+            external_scanner,
+        )
+    }
+
+    /// Create a persistent recovering session over borrowed runtime facts.
+    pub fn session(&self) -> BorrowedSnarkSession<'_> {
+        BorrowedSnarkSession {
+            inner: BorrowedWeavyParseSession::new(
+                &self.plan,
+                &self.parser_grammar,
+                &self.parse_table,
+                &self.facts,
+            ),
+        }
+    }
+
     /// Number of runtime parse-state rows.
     pub fn runtime_state_count(&self) -> usize {
         self.facts.state_count()
@@ -806,6 +835,36 @@ impl BorrowedSnarkModule<'_> {
     /// Admitted Weavy parser and lexer plan.
     pub const fn plan(&self) -> &WeavyParsePlan {
         &self.plan
+    }
+}
+
+/// Persistent recovering session backed by a borrowed Snark module.
+pub struct BorrowedSnarkSession<'a> {
+    inner: BorrowedWeavyParseSession<'a>,
+}
+
+impl<'a> BorrowedSnarkSession<'a> {
+    /// Attach an external scanner host.
+    pub fn with_external_scanner(mut self, scanner: &'a dyn ExternalScannerHost) -> Self {
+        self.inner = self.inner.with_external_scanner(scanner);
+        self
+    }
+
+    /// Parse a full input with recovery and install it as the baseline.
+    pub fn parse_recovering(
+        &mut self,
+        input: impl Into<String>,
+    ) -> Result<&WeavyParseReport, WeavyParseError> {
+        self.inner.parse_recovering(input)
+    }
+
+    /// Incrementally reparse an edited input with recovery.
+    pub fn reparse_recovering(
+        &mut self,
+        edit: crate::parser::ParserInputEdit,
+        input: impl Into<String>,
+    ) -> Result<&WeavyParseReport, WeavyParseError> {
+        self.inner.reparse_recovering(edit, input)
     }
 }
 

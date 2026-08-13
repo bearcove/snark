@@ -60,6 +60,40 @@ fn borrowed_module_uses_persisted_runtime_caches() {
 }
 
 #[test]
+fn borrowed_module_supports_recovery_and_incremental_sessions() {
+    let built = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
+    let bytes = built.save().expect("save");
+    let loaded = SnarkModule::load_borrowed(&bytes).expect("load borrowed");
+
+    let recovered = loaded
+        .parse_recovering("let?Name", None)
+        .expect("borrowed recovery");
+    assert_eq!(
+        recovered
+            .accepted_resolved_cst(loaded.parser_grammar(), "let?Name")
+            .expect("recovered CST")
+            .root()
+            .expect("root")
+            .kind(),
+        "document"
+    );
+
+    let mut session = loaded.session();
+    session
+        .parse_recovering("letName")
+        .expect("session baseline");
+    let edited = "let?Name";
+    let reparsed = session
+        .reparse_recovering(snark::parser::ParserInputEdit::new(3, 3, 4), edited)
+        .expect("borrowed incremental recovery");
+    assert!(
+        reparsed
+            .accepted_resolved_cst(loaded.parser_grammar(), edited)
+            .is_some()
+    );
+}
+
+#[test]
 fn live_parser_executes_through_runtime_facts_interface() {
     let module = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
     let before = module.runtime_facts_read_count();

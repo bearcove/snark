@@ -8472,6 +8472,23 @@ pub(crate) fn parse_borrowed_weavy_with_report_and_scanner<'a>(
     )
 }
 
+pub(crate) fn parse_borrowed_weavy_recovering_with_report_and_scanner<'a>(
+    plan: &'a WeavyParsePlan,
+    parser: &'a parser_ir::ParserGrammar,
+    table: &'a parser_ir::ParseTable,
+    facts: &'a BorrowedRuntimeParserFacts<'a>,
+    input: &'a str,
+    external_scanner: Option<&'a dyn ExternalScannerHost>,
+) -> Result<WeavyParseReport, WeavyParseError> {
+    parse_weavy_with_lexer_program(
+        RuntimeWeavyInput::borrowed(plan, parser, table, facts, input, external_scanner),
+        RuntimeWeavyRecoveryMode::SkipInvalidInput,
+        None,
+        RuntimeWeavyReuseCollection::Disabled,
+        RuntimeWeavyBlockExecution::Direct,
+    )
+}
+
 /// Execute a prepared parser plan through the direct Weavy runtime and return only the tree.
 ///
 /// Deterministic parses skip tree-event journal collection; conflicts or errors fall back to the
@@ -9054,6 +9071,98 @@ pub struct RecoveringDocument {
     pub tree: parser_ir::ResolvedCstTree,
     /// Compact parse and reuse facts for this document.
     pub report: RecoveringDocumentReport,
+}
+
+/// Persistent recovering session over borrowed runtime parser facts.
+pub(crate) struct BorrowedWeavyParseSession<'a> {
+    plan: &'a WeavyParsePlan,
+    parser: &'a parser_ir::ParserGrammar,
+    table: &'a parser_ir::ParseTable,
+    facts: &'a BorrowedRuntimeParserFacts<'a>,
+    external_scanner: Option<&'a dyn ExternalScannerHost>,
+    last_input: Option<String>,
+    last_report: Option<WeavyParseReport>,
+}
+
+impl<'a> BorrowedWeavyParseSession<'a> {
+    pub(crate) const fn new(
+        plan: &'a WeavyParsePlan,
+        parser: &'a parser_ir::ParserGrammar,
+        table: &'a parser_ir::ParseTable,
+        facts: &'a BorrowedRuntimeParserFacts<'a>,
+    ) -> Self {
+        Self {
+            plan,
+            parser,
+            table,
+            facts,
+            external_scanner: None,
+            last_input: None,
+            last_report: None,
+        }
+    }
+
+    pub(crate) fn with_external_scanner(mut self, scanner: &'a dyn ExternalScannerHost) -> Self {
+        self.external_scanner = Some(scanner);
+        self
+    }
+
+    pub(crate) fn parse_recovering(
+        &mut self,
+        input: impl Into<String>,
+    ) -> Result<&WeavyParseReport, WeavyParseError> {
+        let input = input.into();
+        let report = parse_weavy_with_lexer_program(
+            RuntimeWeavyInput::borrowed(
+                self.plan,
+                self.parser,
+                self.table,
+                self.facts,
+                &input,
+                self.external_scanner,
+            ),
+            RuntimeWeavyRecoveryMode::SkipInvalidInput,
+            None,
+            RuntimeWeavyReuseCollection::Enabled,
+            RuntimeWeavyBlockExecution::Direct,
+        )?;
+        self.last_input = Some(input);
+        self.last_report = Some(report);
+        Ok(self.last_report.as_ref().expect("session report installed"))
+    }
+
+    pub(crate) fn reparse_recovering(
+        &mut self,
+        edit: parser_ir::ParserInputEdit,
+        new_input: impl Into<String>,
+    ) -> Result<&WeavyParseReport, WeavyParseError> {
+        let new_input = new_input.into();
+        let report = if let (Some(old_input), Some(previous_report)) =
+            (self.last_input.as_deref(), self.last_report.as_ref())
+        {
+            validate_weavy_edit(edit, old_input, &new_input)?;
+            let reuse_index = RuntimeWeavyReuseIndex::from_report(previous_report, edit);
+            parse_weavy_with_lexer_program(
+                RuntimeWeavyInput::borrowed(
+                    self.plan,
+                    self.parser,
+                    self.table,
+                    self.facts,
+                    &new_input,
+                    self.external_scanner,
+                ),
+                RuntimeWeavyRecoveryMode::SkipInvalidInput,
+                Some(&reuse_index),
+                RuntimeWeavyReuseCollection::Enabled,
+                RuntimeWeavyBlockExecution::Direct,
+            )?
+        } else {
+            return self.parse_recovering(new_input);
+        };
+        self.last_input = Some(new_input);
+        self.last_report = Some(report);
+        Ok(self.last_report.as_ref().expect("session report installed"))
+    }
 }
 
 impl RecoveringDocument {
