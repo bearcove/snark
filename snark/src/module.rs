@@ -54,7 +54,8 @@ const RANGE_PRODUCTION_STEPS: u32 = 9;
 const RANGE_PRODUCTION_METADATA: u32 = 10;
 const RANGE_EXTERNALS: u32 = 11;
 const RANGE_RESERVED_TERMINALS: u32 = 12;
-const RANGE_VALID_SYMBOL_EXTERNALS: u32 = 13;
+const RANGE_VALID_SYMBOL_SETS: u32 = 13;
+const RANGE_VALID_SYMBOL_EXTERNALS: u32 = 14;
 
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
 struct SnarkModuleData {
@@ -82,6 +83,12 @@ struct ParseStateRow {
     entry_count: u32,
     first_goto: u32,
     goto_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ValidSymbolSetRow {
+    first_external: u32,
+    external_count: u32,
 }
 
 struct ActionEntryRow {
@@ -170,6 +177,7 @@ struct RuntimeRanges {
     production_metadata: ConstantRange,
     externals: ConstantRange,
     reserved_terminals: ConstantRange,
+    valid_symbol_sets: ConstantRange,
     valid_symbol_externals: ConstantRange,
 }
 
@@ -390,17 +398,27 @@ impl RuntimeRanges {
                     })
             })
             .collect::<Vec<_>>();
+        let mut first_valid_external = 0u32;
+        let valid_symbol_sets = table
+            .valid_symbol_sets()
+            .iter()
+            .map(|set| {
+                let row = ValidSymbolSetRow {
+                    first_external: first_valid_external,
+                    external_count: u32::try_from(set.externals().len())
+                        .expect("valid symbol external count overflow"),
+                };
+                first_valid_external += row.external_count;
+                row
+            })
+            .collect::<Vec<_>>();
         let valid_symbol_externals = table
             .valid_symbol_sets()
             .iter()
             .flat_map(|set| {
-                set.externals()
-                    .iter()
-                    .copied()
-                    .map(move |external| IndexedIdRow {
-                        owner: set.id().get(),
-                        value: external.get(),
-                    })
+                set.externals().iter().copied().map(|external| ExternalRow {
+                    ordinal: external.get(),
+                })
             })
             .collect::<Vec<_>>();
         let mut first_step = 0u32;
@@ -467,6 +485,8 @@ impl RuntimeRanges {
         let externals = dense_range("SnarkExternal", &externals, &mut schemas)?;
         let reserved_terminals =
             dense_range("SnarkReservedTerminal", &reserved_terminals, &mut schemas)?;
+        let valid_symbol_sets =
+            dense_range("SnarkValidSymbolSet", &valid_symbol_sets, &mut schemas)?;
         let valid_symbol_externals = dense_range(
             "SnarkValidSymbolExternal",
             &valid_symbol_externals,
@@ -486,6 +506,7 @@ impl RuntimeRanges {
             production_metadata,
             externals,
             reserved_terminals,
+            valid_symbol_sets,
             valid_symbol_externals,
         })
     }
@@ -504,7 +525,7 @@ impl RuntimeRanges {
             .collect()
     }
 
-    fn ranges_ref(&self) -> [&ConstantRange; 14] {
+    fn ranges_ref(&self) -> [&ConstantRange; 15] {
         [
             &self.header,
             &self.states,
@@ -519,6 +540,7 @@ impl RuntimeRanges {
             &self.production_metadata,
             &self.externals,
             &self.reserved_terminals,
+            &self.valid_symbol_sets,
             &self.valid_symbol_externals,
         ]
     }
@@ -538,6 +560,7 @@ impl RuntimeRanges {
             self.production_metadata,
             self.externals,
             self.reserved_terminals,
+            self.valid_symbol_sets,
             self.valid_symbol_externals,
         ]
     }
@@ -651,6 +674,13 @@ dense_row!(
         (entry_count, Primitive::U32),
         (first_goto, Primitive::U32),
         (goto_count, Primitive::U32),
+    ]
+);
+dense_row!(
+    ValidSymbolSetRow,
+    [
+        (first_external, Primitive::U32),
+        (external_count, Primitive::U32),
     ]
 );
 dense_row!(
@@ -967,6 +997,7 @@ impl SnarkModule {
             module.dense_range(RANGE_PRODUCTION_METADATA as usize),
             module.dense_range(RANGE_EXTERNALS as usize),
             module.dense_range(RANGE_RESERVED_TERMINALS as usize),
+            module.dense_range(RANGE_VALID_SYMBOL_SETS as usize),
             module.dense_range(RANGE_VALID_SYMBOL_EXTERNALS as usize),
         ];
         let [
@@ -983,6 +1014,7 @@ impl SnarkModule {
             production_metadata,
             externals,
             reserved_terminals,
+            valid_symbol_sets,
             valid_symbol_externals,
         ] = ranges.map(|range| range.map_err(SnarkModuleError::Codec));
         Ok(BorrowedSnarkModule {
@@ -1002,8 +1034,10 @@ impl SnarkModule {
                 production_metadata?,
                 externals?,
                 reserved_terminals?,
+                valid_symbol_sets?,
                 valid_symbol_externals?,
-            ),
+            )
+            .map_err(|error| SnarkModuleError::Codec(CodecError::Aligned(error)))?,
         })
     }
 

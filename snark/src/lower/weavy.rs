@@ -7183,6 +7183,11 @@ impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
 pub(crate) struct BorrowedRuntimeParserFacts<'a> {
     header: phon_storage::DenseRange<'a>,
     states: phon_storage::DenseRange<'a>,
+    state_lex_mode: phon_storage::DenseU32Field,
+    state_first_entry: phon_storage::DenseU32Field,
+    state_entry_count: phon_storage::DenseU32Field,
+    state_first_goto: phon_storage::DenseU32Field,
+    state_goto_count: phon_storage::DenseU32Field,
     action_entries: phon_storage::DenseRange<'a>,
     actions: phon_storage::DenseRange<'a>,
     gotos: phon_storage::DenseRange<'a>,
@@ -7192,12 +7197,16 @@ pub(crate) struct BorrowedRuntimeParserFacts<'a> {
     production_metadata: phon_storage::DenseRange<'a>,
     externals: phon_storage::DenseRange<'a>,
     reserved_terminals: phon_storage::DenseRange<'a>,
+    valid_symbol_sets: phon_storage::DenseRange<'a>,
+    valid_set_first_external: phon_storage::DenseU32Field,
+    valid_set_external_count: phon_storage::DenseU32Field,
     valid_symbol_externals: phon_storage::DenseRange<'a>,
+    valid_external_ordinal: phon_storage::DenseU32Field,
 }
 
 impl<'a> BorrowedRuntimeParserFacts<'a> {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) const fn new(
+    pub(crate) fn new(
         header: phon_storage::DenseRange<'a>,
         states: phon_storage::DenseRange<'a>,
         action_entries: phon_storage::DenseRange<'a>,
@@ -7209,11 +7218,25 @@ impl<'a> BorrowedRuntimeParserFacts<'a> {
         production_metadata: phon_storage::DenseRange<'a>,
         externals: phon_storage::DenseRange<'a>,
         reserved_terminals: phon_storage::DenseRange<'a>,
+        valid_symbol_sets: phon_storage::DenseRange<'a>,
         valid_symbol_externals: phon_storage::DenseRange<'a>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, phon_storage::AlignedError> {
+        let state_lex_mode = states.u32_field("lex_mode")?;
+        let state_first_entry = states.u32_field("first_entry")?;
+        let state_entry_count = states.u32_field("entry_count")?;
+        let state_first_goto = states.u32_field("first_goto")?;
+        let state_goto_count = states.u32_field("goto_count")?;
+        let valid_set_first_external = valid_symbol_sets.u32_field("first_external")?;
+        let valid_set_external_count = valid_symbol_sets.u32_field("external_count")?;
+        let valid_external_ordinal = valid_symbol_externals.u32_field("ordinal")?;
+        Ok(Self {
             header,
             states,
+            state_lex_mode,
+            state_first_entry,
+            state_entry_count,
+            state_first_goto,
+            state_goto_count,
             action_entries,
             actions,
             gotos,
@@ -7223,8 +7246,12 @@ impl<'a> BorrowedRuntimeParserFacts<'a> {
             production_metadata,
             externals,
             reserved_terminals,
+            valid_symbol_sets,
+            valid_set_first_external,
+            valid_set_external_count,
             valid_symbol_externals,
-        }
+            valid_external_ordinal,
+        })
     }
 
     pub(crate) fn state_count(&self) -> usize {
@@ -7309,7 +7336,9 @@ impl RuntimeParserFacts for BorrowedRuntimeParserFacts<'_> {
         let row = self.states.typed_row(state.get() as usize).ok()?;
         Some(RuntimeParseStateFacts {
             id: state,
-            lex_mode: parser_ir::LexModeId::from_index(row.u32("lex_mode").ok()? as usize),
+            lex_mode: parser_ir::LexModeId::from_index(
+                row.u32_at(self.state_lex_mode).ok()? as usize
+            ),
         })
     }
 
@@ -7336,8 +7365,8 @@ impl RuntimeParserFacts for BorrowedRuntimeParserFacts<'_> {
         lookahead: parser_ir::LookaheadSymbol,
     ) -> Option<RuntimeWeavyActionEntry> {
         let state_row = self.states.typed_row(state.get() as usize).ok()?;
-        let first_entry = state_row.u32("first_entry").ok()? as usize;
-        let entry_count = state_row.u32("entry_count").ok()? as usize;
+        let first_entry = state_row.u32_at(self.state_first_entry).ok()? as usize;
+        let entry_count = state_row.u32_at(self.state_entry_count).ok()? as usize;
         let end_entry = first_entry.checked_add(entry_count)?;
         for index in first_entry..end_entry {
             let row = self.action_entries.typed_row(index).ok()?;
@@ -7357,6 +7386,7 @@ impl RuntimeParserFacts for BorrowedRuntimeParserFacts<'_> {
         }
         None
     }
+
     fn action(&self, index: usize) -> Option<parser_ir::ParseAction> {
         let row = self.actions.typed_row(index).ok()?;
         decode_action(&row)
@@ -7368,8 +7398,8 @@ impl RuntimeParserFacts for BorrowedRuntimeParserFacts<'_> {
         nonterminal: parser_ir::NonterminalId,
     ) -> Option<parser_ir::ParseStateId> {
         let state_row = self.states.typed_row(state.get() as usize).ok()?;
-        let first_goto = state_row.u32("first_goto").ok()? as usize;
-        let goto_count = state_row.u32("goto_count").ok()? as usize;
+        let first_goto = state_row.u32_at(self.state_first_goto).ok()? as usize;
+        let goto_count = state_row.u32_at(self.state_goto_count).ok()? as usize;
         let end_goto = first_goto.checked_add(goto_count)?;
         for index in first_goto..end_goto {
             let row = self.gotos.typed_row(index).ok()?;
@@ -7421,37 +7451,28 @@ impl RuntimeParserFacts for BorrowedRuntimeParserFacts<'_> {
         set: parser_ir::ValidSymbolSetId,
         index: usize,
     ) -> Option<parser_ir::ExternalId> {
-        let range = &self.valid_symbol_externals;
-        range
-            .typed_row(
-                (0..range.count())
-                    .filter(|candidate| {
-                        range
-                            .typed_row(*candidate)
-                            .ok()
-                            .and_then(|row| row.u32("owner").ok())
-                            == Some(set.get())
-                    })
-                    .nth(index)?,
-            )
-            .ok()
-            .and_then(|row| row.u32("value").ok())
-            .map(|value| parser_ir::ExternalId::from_index(value as usize))
+        let set_row = self.valid_symbol_sets.typed_row(set.get() as usize).ok()?;
+        let first = set_row.u32_at(self.valid_set_first_external).ok()? as usize;
+        let count = set_row.u32_at(self.valid_set_external_count).ok()? as usize;
+        if index >= count {
+            return None;
+        }
+        let row = self
+            .valid_symbol_externals
+            .typed_row(first.checked_add(index)?)
+            .ok()?;
+        Some(parser_ir::ExternalId::from_index(
+            row.u32_at(self.valid_external_ordinal).ok()? as usize,
+        ))
     }
 
     fn valid_symbol_count(&self, set: parser_ir::ValidSymbolSetId) -> Option<usize> {
-        let range = &self.valid_symbol_externals;
-        Some(
-            (0..range.count())
-                .filter(|index| {
-                    range
-                        .typed_row(*index)
-                        .ok()
-                        .and_then(|row| row.u32("owner").ok())
-                        == Some(set.get())
-                })
-                .count(),
-        )
+        self.valid_symbol_sets
+            .typed_row(set.get() as usize)
+            .ok()?
+            .u32_at(self.valid_set_external_count)
+            .ok()
+            .map(|count| count as usize)
     }
 
     fn production(&self, production: parser_ir::ProductionId) -> Option<RuntimeProductionFacts> {

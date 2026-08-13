@@ -41,11 +41,11 @@ regex-automata = { version = "0.4.14", default-features = false, features = ["st
 smallvec = { version = "1.15", default-features = false }
 unicode-width = "0.2.2"
 wasm-bindgen = "0.2"
-weavy = { git = "https://github.com/bearcove/weavy", rev = "fefef61630ef3d929e5d3b07a4cc26354427f3d3" }
-weavy-phon = { git = "https://github.com/bearcove/weavy", rev = "fefef61630ef3d929e5d3b07a4cc26354427f3d3" }
-phon = { git = "https://github.com/bearcove/phon", rev = "fe15715e345b72d07543fae4135f8b56cff92433" }
-phon-schema = { git = "https://github.com/bearcove/phon", rev = "fe15715e345b72d07543fae4135f8b56cff92433" }
-phon-storage = { git = "https://github.com/bearcove/phon", rev = "fe15715e345b72d07543fae4135f8b56cff92433" }
+weavy = { git = "https://github.com/bearcove/weavy", rev = "cc6ef25" }
+weavy-phon = { git = "https://github.com/bearcove/weavy", rev = "cc6ef25" }
+phon = { git = "https://github.com/bearcove/phon", rev = "3c19df3" }
+phon-schema = { git = "https://github.com/bearcove/phon", rev = "3c19df3" }
+phon-storage = { git = "https://github.com/bearcove/phon", rev = "3c19df3" }
 
 [patch.crates-io]
 copypatch = { path = "../weavy/copypatch" }
