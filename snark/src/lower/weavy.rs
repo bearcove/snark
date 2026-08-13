@@ -7320,10 +7320,13 @@ impl RuntimeParserFacts for BorrowedRuntimeParserFacts<'_> {
         state: parser_ir::ParseStateId,
         lookahead: parser_ir::LookaheadSymbol,
     ) -> Option<RuntimeWeavyActionEntry> {
-        let range = &self.action_entries;
-        for index in 0..range.count() {
-            let row = range.typed_row(index).ok()?;
-            if row.u32("state").ok()? == state.get() && decode_lookahead(&row)? == lookahead {
+        let state_row = self.states.typed_row(state.get() as usize).ok()?;
+        let first_entry = state_row.u32("first_entry").ok()? as usize;
+        let entry_count = state_row.u32("entry_count").ok()? as usize;
+        let end_entry = first_entry.checked_add(entry_count)?;
+        for index in first_entry..end_entry {
+            let row = self.action_entries.typed_row(index).ok()?;
+            if decode_lookahead(&row)? == lookahead {
                 let first_action = row.u32("first_action").ok()? as usize;
                 return Some(RuntimeWeavyActionEntry {
                     lookahead,
@@ -7349,12 +7352,13 @@ impl RuntimeParserFacts for BorrowedRuntimeParserFacts<'_> {
         state: parser_ir::ParseStateId,
         nonterminal: parser_ir::NonterminalId,
     ) -> Option<parser_ir::ParseStateId> {
-        let range = &self.gotos;
-        for index in 0..range.count() {
-            let row = range.typed_row(index).ok()?;
-            if row.u32("state").ok()? == state.get()
-                && row.u32("nonterminal").ok()? == nonterminal.get()
-            {
+        let state_row = self.states.typed_row(state.get() as usize).ok()?;
+        let first_goto = state_row.u32("first_goto").ok()? as usize;
+        let goto_count = state_row.u32("goto_count").ok()? as usize;
+        let end_goto = first_goto.checked_add(goto_count)?;
+        for index in first_goto..end_goto {
+            let row = self.gotos.typed_row(index).ok()?;
+            if row.u32("nonterminal").ok()? == nonterminal.get() {
                 return Some(parser_ir::ParseStateId::from_index(
                     row.u32("target").ok()? as usize
                 ));
