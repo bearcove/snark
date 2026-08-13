@@ -1948,6 +1948,7 @@ pub struct WeavyParserProgram {
     state_blocks: Vec<SnarkBlockId>,
     state_block_refs: Vec<BlockRef>,
     action_blocks: Vec<Vec<Vec<WeavyParserActionBlock>>>,
+    actions: Vec<parser_ir::ParseAction>,
     action_entry_index: RuntimeWeavyStateActionEntryIndex,
     goto_index: RuntimeWeavyStateGotoIndex,
     extra_node_index: RuntimeWeavyExtraNodeIndex,
@@ -2023,6 +2024,10 @@ impl WeavyParserProgram {
         lookahead: parser_ir::LookaheadSymbol,
     ) -> Option<RuntimeWeavyActionEntry> {
         self.action_entry_index.get(state, lookahead)
+    }
+
+    fn action(&self, index: usize) -> Option<parser_ir::ParseAction> {
+        self.actions.get(index).copied()
     }
 
     fn goto_state(
@@ -2151,6 +2156,13 @@ impl WeavyParserProgram {
                         .collect()
                 })
                 .collect(),
+            actions: table
+                .states()
+                .iter()
+                .flat_map(|state| state.entries())
+                .flat_map(|entry| entry.actions())
+                .copied()
+                .collect(),
             action_entry_index: RuntimeWeavyStateActionEntryIndex::new(table),
             goto_index: RuntimeWeavyStateGotoIndex::new(table),
             extra_node_index: RuntimeWeavyExtraNodeIndex::new(parser, &public_node_kind_names),
@@ -2278,6 +2290,7 @@ fn loaded_runtime_weavy_parser_program(
         state_blocks: Vec::new(),
         state_block_refs: Vec::new(),
         action_blocks: Vec::new(),
+        actions: Vec::new(),
         action_entry_index: RuntimeWeavyStateActionEntryIndex::default(),
         goto_index: RuntimeWeavyStateGotoIndex::default(),
         extra_node_index: RuntimeWeavyExtraNodeIndex {
@@ -6760,6 +6773,13 @@ fn lower_weavy_parser_program(
         .iter()
         .map(|alias| Arc::<str>::from(alias.value()))
         .collect::<Vec<_>>();
+    let actions = table
+        .states()
+        .iter()
+        .flat_map(|state| state.entries())
+        .flat_map(|entry| entry.actions())
+        .copied()
+        .collect();
     let action_entry_index = RuntimeWeavyStateActionEntryIndex::new(table);
     let goto_index = RuntimeWeavyStateGotoIndex::new(table);
     let extra_node_index = RuntimeWeavyExtraNodeIndex::new(parser, &public_node_kind_names);
@@ -6770,6 +6790,7 @@ fn lower_weavy_parser_program(
         state_blocks,
         state_block_refs,
         action_blocks,
+        actions,
         action_entry_index,
         goto_index,
         extra_node_index,
@@ -7054,13 +7075,7 @@ impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
     }
     fn action(&self, index: usize) -> Option<parser_ir::ParseAction> {
         Self::record_read();
-        self.table
-            .states()
-            .iter()
-            .flat_map(|state| state.entries())
-            .flat_map(|entry| entry.actions())
-            .nth(index)
-            .copied()
+        self.program.action(index)
     }
 
     fn goto_state(
@@ -16964,6 +16979,7 @@ mod tests {
                 state_blocks: vec![],
                 state_block_refs: vec![],
                 action_blocks: vec![],
+                actions: vec![],
                 action_entry_index: RuntimeWeavyStateActionEntryIndex::default(),
                 goto_index: RuntimeWeavyStateGotoIndex::default(),
                 extra_node_index: RuntimeWeavyExtraNodeIndex::default(),
@@ -17287,6 +17303,7 @@ mod tests {
                 state_blocks: vec![],
                 state_block_refs: vec![],
                 action_blocks: vec![],
+                actions: vec![],
                 action_entry_index: RuntimeWeavyStateActionEntryIndex::default(),
                 goto_index: RuntimeWeavyStateGotoIndex::default(),
                 extra_node_index: RuntimeWeavyExtraNodeIndex::default(),
@@ -17354,6 +17371,7 @@ mod tests {
                 state_blocks: vec![],
                 state_block_refs: vec![],
                 action_blocks: vec![],
+                actions: vec![],
                 action_entry_index: RuntimeWeavyStateActionEntryIndex::default(),
                 goto_index: RuntimeWeavyStateGotoIndex::default(),
                 extra_node_index: RuntimeWeavyExtraNodeIndex::default(),
@@ -17494,6 +17512,7 @@ mod tests {
                 state_blocks: vec![],
                 state_block_refs: vec![],
                 action_blocks: vec![],
+                actions: vec![],
                 action_entry_index: RuntimeWeavyStateActionEntryIndex::default(),
                 goto_index: RuntimeWeavyStateGotoIndex::default(),
                 extra_node_index: RuntimeWeavyExtraNodeIndex::default(),
@@ -17637,6 +17656,7 @@ mod tests {
                 state_blocks: vec![],
                 state_block_refs: vec![],
                 action_blocks: vec![],
+                actions: vec![],
                 action_entry_index: RuntimeWeavyStateActionEntryIndex::default(),
                 goto_index: RuntimeWeavyStateGotoIndex::default(),
                 extra_node_index: RuntimeWeavyExtraNodeIndex::default(),
@@ -18201,6 +18221,7 @@ mod tests {
                 state_blocks: vec![],
                 state_block_refs: vec![],
                 action_blocks: vec![],
+                actions: vec![],
                 action_entry_index: RuntimeWeavyStateActionEntryIndex::default(),
                 goto_index: RuntimeWeavyStateGotoIndex::default(),
                 extra_node_index: RuntimeWeavyExtraNodeIndex::default(),
@@ -18636,6 +18657,7 @@ mod tests {
                 state_blocks: vec![],
                 state_block_refs: vec![],
                 action_blocks: vec![],
+                actions: vec![],
                 action_entry_index: RuntimeWeavyStateActionEntryIndex::default(),
                 goto_index: RuntimeWeavyStateGotoIndex::default(),
                 extra_node_index: RuntimeWeavyExtraNodeIndex::default(),
@@ -18701,6 +18723,7 @@ mod tests {
                 state_blocks: vec![],
                 state_block_refs: vec![],
                 action_blocks: vec![],
+                actions: vec![],
                 action_entry_index: RuntimeWeavyStateActionEntryIndex::default(),
                 goto_index: RuntimeWeavyStateGotoIndex::default(),
                 extra_node_index: RuntimeWeavyExtraNodeIndex::default(),
