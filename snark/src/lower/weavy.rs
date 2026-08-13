@@ -11377,9 +11377,9 @@ fn step_runtime_weavy_branch(
                 branch.scanner_snapshot,
             )
             .is_some()
+        && let Some(branch) =
+            try_reuse_runtime_weavy_node(branch.clone(), reuse_index, input_ctx, output)
     {
-        let branch = try_reuse_runtime_weavy_node(branch, reuse_index, input_ctx, output)
-            .expect("reuse candidate was just found");
         step.outcomes.push(RuntimeWeavyStepOutcome::Branch(branch));
         return;
     }
