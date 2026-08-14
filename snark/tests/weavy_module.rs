@@ -1,4 +1,7 @@
-use snark::module::{SnarkModule, SnarkModuleInspection};
+use snark::module::{
+    SnarkModule, SnarkModuleError, SnarkModuleInspection, SnarkModuleLoadLimits,
+};
+use weavy_phon::{CodecError, ContainerLimitKind};
 
 const FIXTURE_GRAMMAR: &str = r#"{
   "name": "module_fixture",
@@ -30,6 +33,23 @@ fn module_round_trip_matches_live_parser_without_construction_workspace() {
     assert_eq!(first, second);
     assert_eq!(loaded_tree, live);
     assert_eq!(loaded.regex_compile_count(), loaded.unique_regex_count());
+}
+
+#[test]
+fn borrowed_module_enforces_caller_selected_decode_ceiling() {
+    let built = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
+    let bytes = built.save().expect("save");
+    let limits = SnarkModuleLoadLimits::default().with_max_decoded_bytes(0);
+
+    assert!(matches!(
+        SnarkModule::load_borrowed_with_limits(&bytes, limits),
+        Err(SnarkModuleError::Codec(CodecError::ContainerLimitExceeded {
+            kind: ContainerLimitKind::DecodedBytes,
+            configured: 0,
+            actual,
+        })) if actual > 0
+    ));
+    SnarkModule::load_borrowed(&bytes).expect("default bounded load");
 }
 
 #[test]

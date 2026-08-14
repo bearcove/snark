@@ -64,6 +64,47 @@ struct SnarkModuleData {
     module_plan: WeavyModulePlanData,
 }
 
+/// Physical decode ceilings for loading a persisted Snark parser module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnarkModuleLoadLimits {
+    max_decoded_bytes: usize,
+    max_retained_bytes: usize,
+}
+
+impl SnarkModuleLoadLimits {
+    /// Snark's conservative default module ceilings.
+    pub const DEFAULT: Self = Self {
+        max_decoded_bytes: 256 * 1024 * 1024,
+        max_retained_bytes: 256 * 1024 * 1024,
+    };
+
+    /// Selects the maximum total bytes decoded from container sections.
+    #[must_use]
+    pub const fn with_max_decoded_bytes(mut self, max_decoded_bytes: usize) -> Self {
+        self.max_decoded_bytes = max_decoded_bytes;
+        self
+    }
+
+    /// Selects the maximum bytes retained by decoded module structures.
+    #[must_use]
+    pub const fn with_max_retained_bytes(mut self, max_retained_bytes: usize) -> Self {
+        self.max_retained_bytes = max_retained_bytes;
+        self
+    }
+
+    fn container_limits(self) -> weavy_phon::ContainerLimits {
+        weavy_phon::ContainerLimits::default()
+            .with_max_decoded_bytes(self.max_decoded_bytes)
+            .with_max_retained_bytes(self.max_retained_bytes)
+    }
+}
+
+impl Default for SnarkModuleLoadLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RuntimeHeaderRow {
     fingerprint_0: u64,
@@ -966,8 +1007,16 @@ impl SnarkModule {
 
     /// Load a Snark module while borrowing all dense runtime fact rows from `bytes`.
     pub fn load_borrowed(bytes: &[u8]) -> Result<BorrowedSnarkModule<'_>, SnarkModuleError> {
-        let module =
-            weavy_phon::load_borrowed::<SnarkCodec>(bytes).map_err(SnarkModuleError::Codec)?;
+        Self::load_borrowed_with_limits(bytes, SnarkModuleLoadLimits::default())
+    }
+
+    /// Load a borrowed Snark module with caller-selected physical decode ceilings.
+    pub fn load_borrowed_with_limits(
+        bytes: &[u8],
+        limits: SnarkModuleLoadLimits,
+    ) -> Result<BorrowedSnarkModule<'_>, SnarkModuleError> {
+        let module = weavy_phon::load_borrowed::<SnarkCodec>(bytes, limits.container_limits())
+            .map_err(SnarkModuleError::Codec)?;
         module
             .admit(&ModuleVerifier::new([DialectRequirement::new(
                 "snark", 1, 0,
@@ -1043,7 +1092,8 @@ impl SnarkModule {
 
     /// Inspect a module without linking its producing grammar.
     pub fn inspect(bytes: &[u8]) -> Result<SnarkModuleInspection, SnarkModuleError> {
-        let report = weavy_phon::inspect(bytes).map_err(SnarkModuleError::Codec)?;
+        let report = weavy_phon::inspect(bytes, weavy_phon::ContainerLimits::default())
+            .map_err(SnarkModuleError::Codec)?;
         Ok(report.into())
     }
 
