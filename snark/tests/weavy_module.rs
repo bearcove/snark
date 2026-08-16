@@ -45,6 +45,47 @@ fn loaded_module_uses_only_module_local_runtime_data() {
 }
 
 #[test]
+fn generated_artifact_preserves_identity_admission_runtime_and_parse_behavior() {
+    let first = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("first compile");
+    let second = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("second compile");
+    let bytes = first.save().expect("save first artifact");
+    let second_bytes = second.save().expect("save second artifact");
+
+    assert_eq!(blake3::hash(&bytes), blake3::hash(&second_bytes));
+    assert_eq!(bytes, second_bytes);
+
+    let inspection = SnarkModule::inspect(&bytes).expect("inspect admitted artifact");
+    let loaded = SnarkModule::load_borrowed(&bytes).expect("admit and load artifact");
+    assert_eq!(inspection.module_name, "snark.parser");
+    assert_eq!(inspection.constant_count, 3);
+    assert_eq!(inspection.constant_ranges.len(), 15);
+    assert!(loaded.runtime_ranges_borrow(&bytes));
+    assert_eq!(loaded.runtime_state_count(), first.runtime_state_count());
+    assert_eq!(
+        loaded.runtime_conflict_count(),
+        first.runtime_conflict_count()
+    );
+
+    assert_eq!(
+        loaded.parse("letName", None).expect("loaded parse"),
+        first.parse("letName", None).expect("live parse"),
+    );
+
+    let recovered = loaded
+        .parse_recovering("let?Name", None)
+        .expect("loaded recovery");
+    assert_eq!(
+        recovered
+            .accepted_resolved_cst(loaded.parser_grammar(), "let?Name")
+            .expect("recovered CST")
+            .root()
+            .expect("recovered root")
+            .kind(),
+        "document",
+    );
+}
+
+#[test]
 fn borrowed_module_uses_persisted_runtime_caches() {
     let built = SnarkModule::compile_grammar_json(FIXTURE_GRAMMAR).expect("compile");
     let bytes = built.save().expect("save");
