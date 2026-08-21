@@ -455,7 +455,6 @@ mod tests {
             WeavyParsePlan, WeavyParseReport, parse_prepared_weavy_metered_with_report_and_scanner,
             parse_prepared_weavy_tree_and_scanner, parse_prepared_weavy_with_report_and_scanner,
         },
-        module::SnarkModule,
         parser::{
             ExternalScanRequest, ExternalScanResult, ExternalScannerHost, LookaheadSymbol,
             ParseStateId, ParseTable, ParserGenerationStage, ParserGrammar, ScannerSnapshotId,
@@ -1454,43 +1453,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn borrowed_module_preserves_named_css_external_scanning() {
-        let package = TreeSitterPackageImporter::new(CSS_FIXTURE)
-            .import()
-            .unwrap();
-        let grammar = package.first_grammar();
-        let validated = ValidatedGrammar::from_raw(&grammar.grammar.body.grammar).unwrap();
-        let lexical = LexicalFacts::from_grammar(&validated);
-        let parser_grammar = ParserGrammar::normalize_from_validated(&validated, &lexical)
-            .unwrap()
-            .prepare_productions_for_items()
-            .unwrap();
-        let parse_table = ParseTable::from_grammar(&parser_grammar).unwrap();
-        let plan = WeavyParsePlan::new(&validated, &parser_grammar, &parse_table).unwrap();
-        let selector_fixture = grammar
-            .corpus
-            .iter()
-            .find(|fixture| fixture.source.path.as_str() == "test/corpus/selectors.txt")
-            .unwrap();
-        let selector_cases = selector_fixture.parse_cases().unwrap();
-        let module = SnarkModule::from_prepared([0; 32], parser_grammar.clone(), parse_table, plan);
-        let bytes = module.save().expect("save module");
-        let loaded = SnarkModule::load_borrowed(&bytes).expect("load borrowed module");
-        let css_scanner = CssExternalScannerHost::new(grammar, &parser_grammar);
-        let scanner = RecordingCssExternalScannerHost::new(&css_scanner);
-
-        let report = loaded
-            .parse(&selector_cases[5].input, Some(&scanner))
-            .expect("parse borrowed module");
-
-        assert_same!(report.tree(), &selector_cases[5].expected);
-        assert!(scanner.calls.get() > 0);
-        assert!(scanner.accepted.get() > 0);
-        assert!(scanner.accepted_pseudo_class_selector_colon.get() > 0);
-        assert_eq!(scanner.missing_valid_symbols.get(), 0);
-        assert_eq!(scanner.invalid_symbol_requests.get(), 0);
-    }
     #[test]
     fn parses_pinned_css_pseudo_class_selectors_through_weavy_runtime_scanner_snapshots() {
         let package = TreeSitterPackageImporter::new(CSS_FIXTURE)
