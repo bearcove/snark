@@ -1877,14 +1877,6 @@ enum WeavyOpData {
 }
 
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
-/// Compact non-table plan data stored by borrowed `.weavy` modules.
-pub struct WeavyModulePlanData {
-    lexer_program: WeavyLexerProgramData,
-    resolved_cst_names: ResolvedCstNamesData,
-    production_dynamic_precedence: Vec<i32>,
-    extra_nodes: Vec<RuntimeWeavyExtraNodeData>,
-}
-#[derive(Clone, Debug, Facet, PartialEq, Eq)]
 struct ResolvedCstNamesData {
     fields: Vec<String>,
     public_nodes: Vec<String>,
@@ -2279,41 +2271,6 @@ fn dense_to_symbolic_lowered(
     Ok(lowered)
 }
 
-fn loaded_runtime_weavy_parser_program(
-    public_node_kind_names: Vec<String>,
-    alias_names: Vec<String>,
-    extra_nodes: Vec<RuntimeWeavyExtraNodeData>,
-) -> WeavyParserProgram {
-    WeavyParserProgram {
-        lowered: empty_lowered(),
-        dense: DenseSnarkWeavyLowered::new(Vec::new(), Vec::new()),
-        state_blocks: Vec::new(),
-        state_block_refs: Vec::new(),
-        action_blocks: Vec::new(),
-        actions: Vec::new(),
-        action_entry_index: RuntimeWeavyStateActionEntryIndex::default(),
-        goto_index: RuntimeWeavyStateGotoIndex::default(),
-        extra_node_index: RuntimeWeavyExtraNodeIndex {
-            nodes: extra_nodes
-                .into_iter()
-                .map(|node| {
-                    (
-                        node.lookahead,
-                        RuntimeWeavyExtraNode {
-                            kind: Arc::<str>::from(node.kind),
-                            public_node: node.public_node,
-                        },
-                    )
-                })
-                .collect(),
-        },
-        public_node_kind_names: public_node_kind_names
-            .into_iter()
-            .map(Arc::<str>::from)
-            .collect(),
-        alias_names: alias_names.into_iter().map(Arc::<str>::from).collect(),
-    }
-}
 
 fn dense_snark_intrinsic_semantic_stats(
     lowered: &DenseSnarkWeavyLowered,
@@ -2649,25 +2606,6 @@ impl WeavyParsePlan {
         }
     }
 
-    /// Extract compact non-table plan data for a borrowed `.weavy` module.
-    pub fn module_artifact_data(&self) -> WeavyModulePlanData {
-        WeavyModulePlanData {
-            lexer_program: self.lexer_program.artifact_data(),
-            resolved_cst_names: ResolvedCstNamesData::from_runtime(&self.resolved_cst_names),
-            production_dynamic_precedence: self.production_dynamic_precedence.clone(),
-            extra_nodes: self
-                .program
-                .extra_node_index
-                .nodes
-                .iter()
-                .map(|(lookahead, node)| RuntimeWeavyExtraNodeData {
-                    lookahead: *lookahead,
-                    kind: node.kind.to_string(),
-                    public_node: node.public_node,
-                })
-                .collect(),
-        }
-    }
 
     /// Reconstruct a complete runtime plan for legacy owned artifacts.
     pub fn from_artifact_data(
@@ -2703,41 +2641,6 @@ impl WeavyParsePlan {
         })
     }
 
-    /// Reconstruct the compact non-table runtime plan used by borrowed modules.
-    pub fn from_module_artifact_data(data: WeavyModulePlanData) -> Result<Self, WeavyParseError> {
-        let lexer_program = WeavyLexerProgram::from_artifact_data(data.lexer_program)?;
-        let auto_close_index = RuntimeWeavyAutoCloseIndex::from_lexer_program(&lexer_program);
-        let public_node_kind_names = data.resolved_cst_names.public_nodes.clone();
-        let alias_names = data.resolved_cst_names.aliases.clone();
-        let program = loaded_runtime_weavy_parser_program(
-            public_node_kind_names,
-            alias_names,
-            data.extra_nodes,
-        );
-        #[cfg(all(
-            snark_jit_active,
-            any(
-                all(target_os = "macos", target_arch = "aarch64"),
-                all(target_os = "linux", target_arch = "x86_64")
-            )
-        ))]
-        let hostcall_blocks = Arc::new(RuntimeWeavyHostCallBlockCache::new(&program));
-        Ok(Self {
-            program,
-            lexer_program,
-            resolved_cst_names: data.resolved_cst_names.into_runtime(),
-            production_dynamic_precedence: data.production_dynamic_precedence,
-            auto_close_index,
-            #[cfg(all(
-                snark_jit_active,
-                any(
-                    all(target_os = "macos", target_arch = "aarch64"),
-                    all(target_os = "linux", target_arch = "x86_64")
-                )
-            ))]
-            hostcall_blocks,
-        })
-    }
 
     /// Lowered Weavy parser/action program.
     pub const fn program(&self) -> &WeavyParserProgram {
@@ -6861,9 +6764,6 @@ fn action_program_for(
 
 static RUNTIME_FACT_READS: AtomicUsize = AtomicUsize::new(0);
 
-pub(crate) fn runtime_fact_read_count() -> usize {
-    RUNTIME_FACT_READS.load(Ordering::Relaxed)
-}
 
 #[derive(Clone, Copy)]
 struct RuntimeParseStateFacts {
@@ -7180,482 +7080,7 @@ impl RuntimeParserFacts for OwnedRuntimeParserFacts<'_> {
     }
 }
 
-pub(crate) struct BorrowedRuntimeParserFacts<'a> {
-    header: phon_storage::DenseRange<'a>,
-    states: phon_storage::DenseRange<'a>,
-    state_lex_mode: phon_storage::DenseU32Field,
-    state_first_entry: phon_storage::DenseU32Field,
-    state_entry_count: phon_storage::DenseU32Field,
-    state_first_goto: phon_storage::DenseU32Field,
-    state_goto_count: phon_storage::DenseU32Field,
-    action_entries: phon_storage::DenseRange<'a>,
-    actions: phon_storage::DenseRange<'a>,
-    gotos: phon_storage::DenseRange<'a>,
-    lex_modes: phon_storage::DenseRange<'a>,
-    productions: phon_storage::DenseRange<'a>,
-    production_steps: phon_storage::DenseRange<'a>,
-    production_metadata: phon_storage::DenseRange<'a>,
-    externals: phon_storage::DenseRange<'a>,
-    reserved_terminals: phon_storage::DenseRange<'a>,
-    valid_symbol_sets: phon_storage::DenseRange<'a>,
-    valid_set_first_external: phon_storage::DenseU32Field,
-    valid_set_external_count: phon_storage::DenseU32Field,
-    valid_symbol_externals: phon_storage::DenseRange<'a>,
-    valid_external_ordinal: phon_storage::DenseU32Field,
-}
-
-impl<'a> BorrowedRuntimeParserFacts<'a> {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        header: phon_storage::DenseRange<'a>,
-        states: phon_storage::DenseRange<'a>,
-        action_entries: phon_storage::DenseRange<'a>,
-        actions: phon_storage::DenseRange<'a>,
-        gotos: phon_storage::DenseRange<'a>,
-        lex_modes: phon_storage::DenseRange<'a>,
-        productions: phon_storage::DenseRange<'a>,
-        production_steps: phon_storage::DenseRange<'a>,
-        production_metadata: phon_storage::DenseRange<'a>,
-        externals: phon_storage::DenseRange<'a>,
-        reserved_terminals: phon_storage::DenseRange<'a>,
-        valid_symbol_sets: phon_storage::DenseRange<'a>,
-        valid_symbol_externals: phon_storage::DenseRange<'a>,
-    ) -> Result<Self, phon_storage::AlignedError> {
-        let state_lex_mode = states.u32_field("lex_mode")?;
-        let state_first_entry = states.u32_field("first_entry")?;
-        let state_entry_count = states.u32_field("entry_count")?;
-        let state_first_goto = states.u32_field("first_goto")?;
-        let state_goto_count = states.u32_field("goto_count")?;
-        let valid_set_first_external = valid_symbol_sets.u32_field("first_external")?;
-        let valid_set_external_count = valid_symbol_sets.u32_field("external_count")?;
-        let valid_external_ordinal = valid_symbol_externals.u32_field("ordinal")?;
-        Ok(Self {
-            header,
-            states,
-            state_lex_mode,
-            state_first_entry,
-            state_entry_count,
-            state_first_goto,
-            state_goto_count,
-            action_entries,
-            actions,
-            gotos,
-            lex_modes,
-            productions,
-            production_steps,
-            production_metadata,
-            externals,
-            reserved_terminals,
-            valid_symbol_sets,
-            valid_set_first_external,
-            valid_set_external_count,
-            valid_symbol_externals,
-            valid_external_ordinal,
-        })
-    }
-
-    pub(crate) fn state_count(&self) -> usize {
-        self.states.count()
-    }
-
-    pub(crate) fn conflict_count(&self) -> usize {
-        self.header
-            .typed_row(0)
-            .ok()
-            .and_then(|row| row.u32("conflict_count").ok())
-            .unwrap_or(0) as usize
-    }
-}
-
-fn optional_id<T>(value: u32, from_index: impl FnOnce(usize) -> T) -> Option<T> {
-    (value != u32::MAX).then(|| from_index(value as usize))
-}
-
-fn decode_lookahead(row: &phon_storage::DenseRowRef<'_>) -> Option<parser_ir::LookaheadSymbol> {
-    let kind = row.u8("lookahead_kind").ok()?;
-    let a = row.u32("lookahead_a").ok()? as usize;
-    let b = row.u32("lookahead_b").ok()? as usize;
-    Some(match kind {
-        0 => parser_ir::LookaheadSymbol::Terminal(parser_ir::TerminalId::from_index(a)),
-        1 => parser_ir::LookaheadSymbol::External(parser_ir::ExternalId::from_index(a)),
-        2 => parser_ir::LookaheadSymbol::Eof,
-        3 => parser_ir::LookaheadSymbol::ReservedWord {
-            terminal: parser_ir::TerminalId::from_index(a),
-            context: parser_ir::ReservedContextId::from_index(b),
-        },
-        4 => parser_ir::LookaheadSymbol::ErrorRecovery(parser_ir::InternalSymbolId::from_index(a)),
-        _ => return None,
-    })
-}
-
-fn decode_action_fields(
-    kind: u8,
-    a: usize,
-    b: usize,
-    c: usize,
-    d: usize,
-    precedence: i32,
-) -> Option<parser_ir::ParseAction> {
-    Some(match kind {
-        0 => parser_ir::ParseAction::Accept {
-            production: parser_ir::ProductionId::from_index(a),
-            metadata: parser_ir::ProductionMetadataId::from_index(b),
-            symbol: parser_ir::NonterminalId::from_index(c),
-            child_count: d,
-            dynamic_precedence: precedence,
-        },
-        1 => parser_ir::ParseAction::Shift {
-            state: parser_ir::ParseStateId::from_index(a),
-            repetition: b != 0,
-        },
-        2 => parser_ir::ParseAction::ShiftExtra,
-        3 => parser_ir::ParseAction::Reduce {
-            production: parser_ir::ProductionId::from_index(a),
-            metadata: parser_ir::ProductionMetadataId::from_index(b),
-            symbol: parser_ir::NonterminalId::from_index(c),
-            child_count: d,
-            dynamic_precedence: precedence,
-        },
-        _ => return None,
-    })
-}
-
-fn decode_action(row: &phon_storage::DenseRowRef<'_>) -> Option<parser_ir::ParseAction> {
-    decode_action_fields(
-        row.u8("kind").ok()?,
-        row.u32("a").ok()? as usize,
-        row.u32("b").ok()? as usize,
-        row.u32("c").ok()? as usize,
-        row.u32("d").ok()? as usize,
-        row.i32("precedence").ok()?,
-    )
-}
-
-impl RuntimeParserFacts for BorrowedRuntimeParserFacts<'_> {
-    fn parse_state(&self, state: parser_ir::ParseStateId) -> Option<RuntimeParseStateFacts> {
-        let row = self.states.typed_row(state.get() as usize).ok()?;
-        Some(RuntimeParseStateFacts {
-            id: state,
-            lex_mode: parser_ir::LexModeId::from_index(
-                row.u32_at(self.state_lex_mode).ok()? as usize
-            ),
-        })
-    }
-
-    fn lex_mode(&self, mode: parser_ir::LexModeId) -> Option<RuntimeLexModeFacts> {
-        let row = self.lex_modes.typed_row(mode.get() as usize).ok()?;
-        Some(RuntimeLexModeFacts {
-            id: mode,
-            external_count: row.u32("external_count").ok()? as usize,
-            reserved_context: optional_id(
-                row.u32("reserved_context").ok()?,
-                parser_ir::ReservedContextId::from_index,
-            ),
-            valid_symbols: optional_id(
-                row.u32("valid_symbols").ok()?,
-                parser_ir::ValidSymbolSetId::from_index,
-            ),
-            word: optional_id(row.u32("word").ok()?, parser_ir::TerminalId::from_index),
-        })
-    }
-
-    fn action_entry(
-        &self,
-        state: parser_ir::ParseStateId,
-        lookahead: parser_ir::LookaheadSymbol,
-    ) -> Option<RuntimeWeavyActionEntry> {
-        let state_row = self.states.typed_row(state.get() as usize).ok()?;
-        let first_entry = state_row.u32_at(self.state_first_entry).ok()? as usize;
-        let entry_count = state_row.u32_at(self.state_entry_count).ok()? as usize;
-        let end_entry = first_entry.checked_add(entry_count)?;
-        for index in first_entry..end_entry {
-            let row = self.action_entries.typed_row(index).ok()?;
-            if decode_lookahead(&row)? == lookahead {
-                let first_action = row.u32("first_action").ok()? as usize;
-                return Some(RuntimeWeavyActionEntry {
-                    lookahead,
-                    entry_index: row.u32("entry_index").ok()? as usize,
-                    first_action,
-                    action_count: row.u32("action_count").ok()? as usize,
-                    conflict: optional_id(
-                        row.u32("conflict").ok()?,
-                        parser_ir::ConflictId::from_index,
-                    ),
-                });
-            }
-        }
-        None
-    }
-
-    fn action(&self, index: usize) -> Option<parser_ir::ParseAction> {
-        let row = self.actions.typed_row(index).ok()?;
-        decode_action(&row)
-    }
-
-    fn goto_state(
-        &self,
-        state: parser_ir::ParseStateId,
-        nonterminal: parser_ir::NonterminalId,
-    ) -> Option<parser_ir::ParseStateId> {
-        let state_row = self.states.typed_row(state.get() as usize).ok()?;
-        let first_goto = state_row.u32_at(self.state_first_goto).ok()? as usize;
-        let goto_count = state_row.u32_at(self.state_goto_count).ok()? as usize;
-        let end_goto = first_goto.checked_add(goto_count)?;
-        for index in first_goto..end_goto {
-            let row = self.gotos.typed_row(index).ok()?;
-            if row.u32("nonterminal").ok()? == nonterminal.get() {
-                return Some(parser_ir::ParseStateId::from_index(
-                    row.u32("target").ok()? as usize
-                ));
-            }
-        }
-        None
-    }
-
-    fn state_count(&self) -> usize {
-        self.states.count()
-    }
-
-    fn state_has_lookahead(
-        &self,
-        state: parser_ir::ParseStateId,
-        lookahead: parser_ir::LookaheadSymbol,
-    ) -> bool {
-        self.action_entry(state, lookahead).is_some()
-    }
-
-    fn reserved_terminal(
-        &self,
-        context: parser_ir::ReservedContextId,
-        terminal: parser_ir::TerminalId,
-    ) -> Option<bool> {
-        let range = &self.reserved_terminals;
-        Some((0..range.count()).any(|index| {
-            let Ok(row) = range.typed_row(index) else {
-                return false;
-            };
-            row.u32("owner").ok() == Some(context.get())
-                && row.u32("value").ok() == Some(terminal.get())
-        }))
-    }
-
-    fn external_symbol(&self, external: parser_ir::ExternalId) -> Option<RuntimeExternalFacts> {
-        let row = self.externals.typed_row(external.get() as usize).ok()?;
-        Some(RuntimeExternalFacts {
-            ordinal: row.u32("ordinal").ok()?,
-        })
-    }
-
-    fn valid_symbol_external(
-        &self,
-        set: parser_ir::ValidSymbolSetId,
-        index: usize,
-    ) -> Option<parser_ir::ExternalId> {
-        let set_row = self.valid_symbol_sets.typed_row(set.get() as usize).ok()?;
-        let first = set_row.u32_at(self.valid_set_first_external).ok()? as usize;
-        let count = set_row.u32_at(self.valid_set_external_count).ok()? as usize;
-        if index >= count {
-            return None;
-        }
-        let row = self
-            .valid_symbol_externals
-            .typed_row(first.checked_add(index)?)
-            .ok()?;
-        Some(parser_ir::ExternalId::from_index(
-            row.u32_at(self.valid_external_ordinal).ok()? as usize,
-        ))
-    }
-
-    fn valid_symbol_count(&self, set: parser_ir::ValidSymbolSetId) -> Option<usize> {
-        self.valid_symbol_sets
-            .typed_row(set.get() as usize)
-            .ok()?
-            .u32_at(self.valid_set_external_count)
-            .ok()
-            .map(|count| count as usize)
-    }
-
-    fn production(&self, production: parser_ir::ProductionId) -> Option<RuntimeProductionFacts> {
-        self.productions.typed_row(production.get() as usize).ok()?;
-        Some(RuntimeProductionFacts)
-    }
-
-    fn production_step(
-        &self,
-        production: parser_ir::ProductionId,
-        index: usize,
-    ) -> Option<RuntimeProductionStepFacts> {
-        let production_row = self.productions.typed_row(production.get() as usize).ok()?;
-        let first = production_row.u32("first_step").ok()? as usize;
-        let row = self
-            .production_steps
-            .typed_row(first.checked_add(index)?)
-            .ok()?;
-        Some(RuntimeProductionStepFacts {
-            field: optional_id(row.u32("field").ok()?, |index| {
-                crate::validated::FieldId::from_index(index).ok()
-            })
-            .flatten(),
-            alias: optional_id(row.u32("alias").ok()?, |index| {
-                crate::validated::AliasId::from_index(index).ok()
-            })
-            .flatten(),
-            alias_named: match row.u8("alias_named").ok()? {
-                0 => Some(false),
-                1 => Some(true),
-                2 => None,
-                _ => return None,
-            },
-        })
-    }
-
-    fn production_metadata(
-        &self,
-        metadata: parser_ir::ProductionMetadataId,
-    ) -> Option<RuntimeProductionMetadataFacts> {
-        let row = self
-            .production_metadata
-            .typed_row(metadata.get() as usize)
-            .ok()?;
-        Some(RuntimeProductionMetadataFacts {
-            public_node: optional_id(
-                row.u32("public_node").ok()?,
-                parser_ir::PublicNodeKindId::from_index,
-            ),
-        })
-    }
-}
-#[derive(Clone, Copy)]
-enum RuntimeParserFactsProvider<'a> {
-    Owned(OwnedRuntimeParserFacts<'a>),
-    Borrowed(&'a BorrowedRuntimeParserFacts<'a>),
-}
-
-impl RuntimeParserFacts for RuntimeParserFactsProvider<'_> {
-    fn parse_state(&self, state: parser_ir::ParseStateId) -> Option<RuntimeParseStateFacts> {
-        match self {
-            Self::Owned(facts) => facts.parse_state(state),
-            Self::Borrowed(facts) => facts.parse_state(state),
-        }
-    }
-
-    fn lex_mode(&self, mode: parser_ir::LexModeId) -> Option<RuntimeLexModeFacts> {
-        match self {
-            Self::Owned(facts) => facts.lex_mode(mode),
-            Self::Borrowed(facts) => facts.lex_mode(mode),
-        }
-    }
-
-    fn action_entry(
-        &self,
-        state: parser_ir::ParseStateId,
-        lookahead: parser_ir::LookaheadSymbol,
-    ) -> Option<RuntimeWeavyActionEntry> {
-        match self {
-            Self::Owned(facts) => facts.action_entry(state, lookahead),
-            Self::Borrowed(facts) => facts.action_entry(state, lookahead),
-        }
-    }
-
-    fn action(&self, index: usize) -> Option<parser_ir::ParseAction> {
-        match self {
-            Self::Owned(facts) => facts.action(index),
-            Self::Borrowed(facts) => facts.action(index),
-        }
-    }
-    fn state_count(&self) -> usize {
-        match self {
-            Self::Owned(facts) => facts.state_count(),
-            Self::Borrowed(facts) => facts.state_count(),
-        }
-    }
-
-    fn state_has_lookahead(
-        &self,
-        state: parser_ir::ParseStateId,
-        lookahead: parser_ir::LookaheadSymbol,
-    ) -> bool {
-        match self {
-            Self::Owned(facts) => facts.state_has_lookahead(state, lookahead),
-            Self::Borrowed(facts) => facts.state_has_lookahead(state, lookahead),
-        }
-    }
-
-    fn goto_state(
-        &self,
-        state: parser_ir::ParseStateId,
-        nonterminal: parser_ir::NonterminalId,
-    ) -> Option<parser_ir::ParseStateId> {
-        match self {
-            Self::Owned(facts) => facts.goto_state(state, nonterminal),
-            Self::Borrowed(facts) => facts.goto_state(state, nonterminal),
-        }
-    }
-
-    fn reserved_terminal(
-        &self,
-        context: parser_ir::ReservedContextId,
-        terminal: parser_ir::TerminalId,
-    ) -> Option<bool> {
-        match self {
-            Self::Owned(facts) => facts.reserved_terminal(context, terminal),
-            Self::Borrowed(facts) => facts.reserved_terminal(context, terminal),
-        }
-    }
-
-    fn external_symbol(&self, external: parser_ir::ExternalId) -> Option<RuntimeExternalFacts> {
-        match self {
-            Self::Owned(facts) => facts.external_symbol(external),
-            Self::Borrowed(facts) => facts.external_symbol(external),
-        }
-    }
-
-    fn valid_symbol_external(
-        &self,
-        set: parser_ir::ValidSymbolSetId,
-        index: usize,
-    ) -> Option<parser_ir::ExternalId> {
-        match self {
-            Self::Owned(facts) => facts.valid_symbol_external(set, index),
-            Self::Borrowed(facts) => facts.valid_symbol_external(set, index),
-        }
-    }
-
-    fn valid_symbol_count(&self, set: parser_ir::ValidSymbolSetId) -> Option<usize> {
-        match self {
-            Self::Owned(facts) => facts.valid_symbol_count(set),
-            Self::Borrowed(facts) => facts.valid_symbol_count(set),
-        }
-    }
-
-    fn production(&self, production: parser_ir::ProductionId) -> Option<RuntimeProductionFacts> {
-        match self {
-            Self::Owned(facts) => facts.production(production),
-            Self::Borrowed(facts) => facts.production(production),
-        }
-    }
-
-    fn production_step(
-        &self,
-        production: parser_ir::ProductionId,
-        index: usize,
-    ) -> Option<RuntimeProductionStepFacts> {
-        match self {
-            Self::Owned(facts) => facts.production_step(production, index),
-            Self::Borrowed(facts) => facts.production_step(production, index),
-        }
-    }
-
-    fn production_metadata(
-        &self,
-        metadata: parser_ir::ProductionMetadataId,
-    ) -> Option<RuntimeProductionMetadataFacts> {
-        match self {
-            Self::Owned(facts) => facts.production_metadata(metadata),
-            Self::Borrowed(facts) => facts.production_metadata(metadata),
-        }
-    }
-}
+type RuntimeParserFactsProvider<'a> = OwnedRuntimeParserFacts<'a>;
 
 #[derive(Clone, Copy)]
 struct RuntimeWeavyInput<'a> {
@@ -7683,11 +7108,11 @@ impl<'a> RuntimeWeavyInput<'a> {
             auto_close_index: &plan.auto_close_index,
             parser,
             table,
-            facts: RuntimeParserFactsProvider::Owned(OwnedRuntimeParserFacts {
+            facts: OwnedRuntimeParserFacts {
                 parser,
                 table,
                 program: &plan.program,
-            }),
+            },
             input,
             external_scanner,
         }
@@ -7729,27 +7154,6 @@ struct RuntimeWeavyStepperInput<'a> {
     external_scanner_errors: &'a RefCell<Vec<String>>,
 }
 
-impl<'a> RuntimeWeavyInput<'a> {
-    pub(crate) fn borrowed(
-        plan: &'a WeavyParsePlan,
-        parser: &'a parser_ir::ParserGrammar,
-        table: &'a parser_ir::ParseTable,
-        facts: &'a BorrowedRuntimeParserFacts<'a>,
-        input: &'a str,
-        external_scanner: Option<&'a dyn ExternalScannerHost>,
-    ) -> Self {
-        Self {
-            plan,
-            lexer_program: &plan.lexer_program,
-            auto_close_index: &plan.auto_close_index,
-            parser,
-            table,
-            facts: RuntimeParserFactsProvider::Borrowed(facts),
-            input,
-            external_scanner,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeWeavyTreeEventCollection {
@@ -8471,44 +7875,6 @@ pub fn parse_prepared_weavy_with_report_and_scanner(
     )
 }
 
-pub(crate) fn parse_borrowed_weavy_with_report_and_scanner<'a>(
-    plan: &'a WeavyParsePlan,
-    parser: &'a parser_ir::ParserGrammar,
-    table: &'a parser_ir::ParseTable,
-    facts: &'a BorrowedRuntimeParserFacts<'a>,
-    input: &'a str,
-    external_scanner: Option<&'a dyn ExternalScannerHost>,
-) -> Result<WeavyParseReport, WeavyParseError> {
-    let input_ctx =
-        RuntimeWeavyInput::borrowed(plan, parser, table, facts, input, external_scanner);
-    if let Some(report) = parse_weavy_deterministic_report_with_lexer_program(input_ctx)? {
-        return Ok(report);
-    }
-    parse_weavy_with_lexer_program(
-        input_ctx,
-        RuntimeWeavyRecoveryMode::Strict,
-        None,
-        RuntimeWeavyReuseCollection::Disabled,
-        RuntimeWeavyBlockExecution::Direct,
-    )
-}
-
-pub(crate) fn parse_borrowed_weavy_recovering_with_report_and_scanner<'a>(
-    plan: &'a WeavyParsePlan,
-    parser: &'a parser_ir::ParserGrammar,
-    table: &'a parser_ir::ParseTable,
-    facts: &'a BorrowedRuntimeParserFacts<'a>,
-    input: &'a str,
-    external_scanner: Option<&'a dyn ExternalScannerHost>,
-) -> Result<WeavyParseReport, WeavyParseError> {
-    parse_weavy_with_lexer_program(
-        RuntimeWeavyInput::borrowed(plan, parser, table, facts, input, external_scanner),
-        RuntimeWeavyRecoveryMode::SkipInvalidInput,
-        None,
-        RuntimeWeavyReuseCollection::Disabled,
-        RuntimeWeavyBlockExecution::Direct,
-    )
-}
 
 /// Execute a prepared parser plan through the direct Weavy runtime and return only the tree.
 ///
@@ -9094,97 +8460,6 @@ pub struct RecoveringDocument {
     pub report: RecoveringDocumentReport,
 }
 
-/// Persistent recovering session over borrowed runtime parser facts.
-pub(crate) struct BorrowedWeavyParseSession<'a> {
-    plan: &'a WeavyParsePlan,
-    parser: &'a parser_ir::ParserGrammar,
-    table: &'a parser_ir::ParseTable,
-    facts: &'a BorrowedRuntimeParserFacts<'a>,
-    external_scanner: Option<&'a dyn ExternalScannerHost>,
-    last_input: Option<String>,
-    last_report: Option<WeavyParseReport>,
-}
-
-impl<'a> BorrowedWeavyParseSession<'a> {
-    pub(crate) const fn new(
-        plan: &'a WeavyParsePlan,
-        parser: &'a parser_ir::ParserGrammar,
-        table: &'a parser_ir::ParseTable,
-        facts: &'a BorrowedRuntimeParserFacts<'a>,
-    ) -> Self {
-        Self {
-            plan,
-            parser,
-            table,
-            facts,
-            external_scanner: None,
-            last_input: None,
-            last_report: None,
-        }
-    }
-
-    pub(crate) fn with_external_scanner(mut self, scanner: &'a dyn ExternalScannerHost) -> Self {
-        self.external_scanner = Some(scanner);
-        self
-    }
-
-    pub(crate) fn parse_recovering(
-        &mut self,
-        input: impl Into<String>,
-    ) -> Result<&WeavyParseReport, WeavyParseError> {
-        let input = input.into();
-        let report = parse_weavy_with_lexer_program(
-            RuntimeWeavyInput::borrowed(
-                self.plan,
-                self.parser,
-                self.table,
-                self.facts,
-                &input,
-                self.external_scanner,
-            ),
-            RuntimeWeavyRecoveryMode::SkipInvalidInput,
-            None,
-            RuntimeWeavyReuseCollection::Enabled,
-            RuntimeWeavyBlockExecution::Direct,
-        )?;
-        self.last_input = Some(input);
-        self.last_report = Some(report);
-        Ok(self.last_report.as_ref().expect("session report installed"))
-    }
-
-    pub(crate) fn reparse_recovering(
-        &mut self,
-        edit: parser_ir::ParserInputEdit,
-        new_input: impl Into<String>,
-    ) -> Result<&WeavyParseReport, WeavyParseError> {
-        let new_input = new_input.into();
-        let report = if let (Some(old_input), Some(previous_report)) =
-            (self.last_input.as_deref(), self.last_report.as_ref())
-        {
-            validate_weavy_edit(edit, old_input, &new_input)?;
-            let reuse_index = RuntimeWeavyReuseIndex::from_report(previous_report, edit);
-            parse_weavy_with_lexer_program(
-                RuntimeWeavyInput::borrowed(
-                    self.plan,
-                    self.parser,
-                    self.table,
-                    self.facts,
-                    &new_input,
-                    self.external_scanner,
-                ),
-                RuntimeWeavyRecoveryMode::SkipInvalidInput,
-                Some(&reuse_index),
-                RuntimeWeavyReuseCollection::Enabled,
-                RuntimeWeavyBlockExecution::Direct,
-            )?
-        } else {
-            return self.parse_recovering(new_input);
-        };
-        self.last_input = Some(new_input);
-        self.last_report = Some(report);
-        Ok(self.last_report.as_ref().expect("session report installed"))
-    }
-}
 
 impl RecoveringDocument {
     /// Normalized recovery diagnostics attached to the document tree.
@@ -17900,11 +17175,11 @@ mod tests {
                 auto_close_index: &plan.auto_close_index,
                 parser: &parser,
                 table: &table,
-                facts: RuntimeParserFactsProvider::Owned(OwnedRuntimeParserFacts {
+                facts: OwnedRuntimeParserFacts {
                     parser: &parser,
                     table: &table,
                     program: &plan.program,
-                }),
+                },
                 input: "ab",
                 external_scanner: None,
             })
@@ -17917,11 +17192,11 @@ mod tests {
                 auto_close_index: &plan.auto_close_index,
                 parser: &parser,
                 table: &table,
-                facts: RuntimeParserFactsProvider::Owned(OwnedRuntimeParserFacts {
+                facts: OwnedRuntimeParserFacts {
                     parser: &parser,
                     table: &table,
                     program: &plan.program,
-                }),
+                },
                 input: "ab",
                 external_scanner: None,
             })
@@ -17938,11 +17213,11 @@ mod tests {
                 auto_close_index: &plan.auto_close_index,
                 parser: &parser,
                 table: &table,
-                facts: RuntimeParserFactsProvider::Owned(OwnedRuntimeParserFacts {
+                facts: OwnedRuntimeParserFacts {
                     parser: &parser,
                     table: &table,
                     program: &plan.program,
-                }),
+                },
                 input: "ab",
                 external_scanner: None,
             },
@@ -17962,11 +17237,11 @@ mod tests {
                 auto_close_index: &plan.auto_close_index,
                 parser: &parser,
                 table: &table,
-                facts: RuntimeParserFactsProvider::Owned(OwnedRuntimeParserFacts {
+                facts: OwnedRuntimeParserFacts {
                     parser: &parser,
                     table: &table,
                     program: &plan.program,
-                }),
+                },
                 input: "ab",
                 external_scanner: None,
             })
@@ -17995,11 +17270,11 @@ mod tests {
                 auto_close_index: &plan.auto_close_index,
                 parser: &parser,
                 table: &table,
-                facts: RuntimeParserFactsProvider::Owned(OwnedRuntimeParserFacts {
+                facts: OwnedRuntimeParserFacts {
                     parser: &parser,
                     table: &table,
                     program: &plan.program,
-                }),
+                },
                 input: "ab",
                 external_scanner: None,
             },
@@ -18294,11 +17569,11 @@ mod tests {
                 auto_close_index: &plan.auto_close_index,
                 parser: &parser,
                 table: &table,
-                facts: RuntimeParserFactsProvider::Owned(OwnedRuntimeParserFacts {
+                facts: OwnedRuntimeParserFacts {
                     parser: &parser,
                     table: &table,
                     program: &plan.program,
-                }),
+                },
                 input: "x",
                 external_scanner: None,
             })

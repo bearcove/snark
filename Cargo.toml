@@ -24,13 +24,13 @@ aho-corasick = "1.1.4"
 blake3 = "1.8.6"
 arborium-theme = "2.4.5"
 cc = "1.0.87"
-facet-styx = { git = "https://github.com/bearcove/styx", rev = "67bf0b6c8e724f90b498281667e0bbb5fd93225d" }
-gingembre-syntax = { git = "https://github.com/bearcove/dodeca", rev = "20131be7d72286b2c45a6e2d652c361892e84d47" }
-rediff = { git = "https://github.com/facet-rs/facet", rev = "5705fa6c51289bea49f5729c52dc5e23cedce4f8" }
-facet = { git = "https://github.com/facet-rs/facet", rev = "5705fa6c51289bea49f5729c52dc5e23cedce4f8" }
-facet-value = { git = "https://github.com/facet-rs/facet", rev = "5705fa6c51289bea49f5729c52dc5e23cedce4f8" }
-facet-postcard = { git = "https://github.com/facet-rs/facet", rev = "5705fa6c51289bea49f5729c52dc5e23cedce4f8" }
-facet-json = { git = "https://github.com/facet-rs/facet", rev = "5705fa6c51289bea49f5729c52dc5e23cedce4f8" }
+facet-styx = "5.0.0-rc.5"
+gingembre-syntax = "0.0.1"
+rediff = "0.50.0-rc.7"
+facet = "0.50.0-rc.7"
+facet-value = "0.50.0-rc.7"
+facet-postcard = "0.50.0-rc.7"
+facet-json = "0.50.0-rc.7"
 indexmap = { version = "2.12.1", default-features = false }
 snark = { path = "snark", version = "0.0.1" }
 snark-dsl = { path = "snark-dsl" }
@@ -41,23 +41,8 @@ regex-automata = { version = "0.4.14", default-features = false, features = ["st
 smallvec = { version = "1.15", default-features = false }
 unicode-width = "0.2.2"
 wasm-bindgen = "0.2"
-weavy = { git = "https://github.com/bearcove/weavy", rev = "cc6ef25" }
-weavy-phon = { git = "https://github.com/bearcove/weavy", rev = "cc6ef25" }
-phon = { git = "https://github.com/bearcove/phon", rev = "3c19df3" }
-phon-schema = { git = "https://github.com/bearcove/phon", rev = "3c19df3" }
-phon-storage = { git = "https://github.com/bearcove/phon", rev = "3c19df3" }
+weavy = "0.2.3-rc.0"
 
-[patch.crates-io]
-copypatch = { path = "../weavy/copypatch" }
-taxon = { path = "../weavy/taxon" }
-weavy = { path = "../weavy/weavy" }
-weavy-phon = { path = "../weavy/weavy-phon" }
-
-[patch."https://github.com/bearcove/weavy"]
-copypatch = { path = "../weavy/copypatch" }
-taxon = { path = "../weavy/taxon" }
-weavy = { path = "../weavy/weavy" }
-weavy-phon = { path = "../weavy/weavy-phon" }
 
 
 [workspace.lints.rust]
