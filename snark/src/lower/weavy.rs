@@ -2271,7 +2271,6 @@ fn dense_to_symbolic_lowered(
     Ok(lowered)
 }
 
-
 fn dense_snark_intrinsic_semantic_stats(
     lowered: &DenseSnarkWeavyLowered,
 ) -> SnarkIntrinsicSemanticStats {
@@ -2606,7 +2605,6 @@ impl WeavyParsePlan {
         }
     }
 
-
     /// Reconstruct a complete runtime plan for legacy owned artifacts.
     pub fn from_artifact_data(
         data: WeavyParsePlanData,
@@ -2640,7 +2638,6 @@ impl WeavyParsePlan {
             hostcall_blocks,
         })
     }
-
 
     /// Lowered Weavy parser/action program.
     pub const fn program(&self) -> &WeavyParserProgram {
@@ -6764,7 +6761,6 @@ fn action_program_for(
 
 static RUNTIME_FACT_READS: AtomicUsize = AtomicUsize::new(0);
 
-
 #[derive(Clone, Copy)]
 struct RuntimeParseStateFacts {
     id: parser_ir::ParseStateId,
@@ -7153,7 +7149,6 @@ struct RuntimeWeavyStepperInput<'a> {
     input_points: &'a RuntimeWeavyInputPoints,
     external_scanner_errors: &'a RefCell<Vec<String>>,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeWeavyTreeEventCollection {
@@ -7875,7 +7870,6 @@ pub fn parse_prepared_weavy_with_report_and_scanner(
     )
 }
 
-
 /// Execute a prepared parser plan through the direct Weavy runtime and return only the tree.
 ///
 /// Deterministic parses skip tree-event journal collection; conflicts or errors fall back to the
@@ -8459,7 +8453,6 @@ pub struct RecoveringDocument {
     /// Compact parse and reuse facts for this document.
     pub report: RecoveringDocumentReport,
 }
-
 
 impl RecoveringDocument {
     /// Normalized recovery diagnostics attached to the document tree.
