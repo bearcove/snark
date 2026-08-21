@@ -1,0 +1,27 @@
+# release-plz configuration
+# https://release-plz.dev/docs/config
+
+[[package]]
+name = "snark-dsl"
+release = false
+publish = false
+
+[[package]]
+name = "snark-playground"
+release = false
+publish = false
+
+[[package]]
+name = "snark-scanner-host"
+release = false
+publish = false
+
+[[package]]
+name = "snark-ts-diff"
+release = false
+publish = false
+
+[[package]]
+name = "snark-wasm"
+release = false
+publish = false
