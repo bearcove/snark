@@ -73,6 +73,7 @@ pub fn official_tree_sitter_dsl_source() -> &'static str {
     OFFICIAL_TREE_SITTER_DSL
 }
 
+#[cfg(feature = "native")]
 const COMMONJS_SHIM: &str = "globalThis.module = { exports: {} };\nglobalThis.exports = globalThis.module.exports;\nglobalThis.console ??= { log() {}, warn() {}, error() {} };\nglobalThis.process ??= { env: {} };";
 
 #[cfg(feature = "native")]
