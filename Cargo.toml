@@ -32,8 +32,8 @@ facet-value = "0.50.0-rc.7"
 facet-postcard = "0.50.0-rc.7"
 facet-json = "0.50.0-rc.7"
 indexmap = { version = "2.12.1", default-features = false }
-snark = { path = "snark", version = "0.0.2" }
-snark-dsl = { path = "snark-dsl", version = "0.1.0" }
+snark = { path = "snark", version = "0.0.3" }
+snark-dsl = { path = "snark-dsl", version = "0.1.1" }
 snark-scanner-host = { path = "snark-scanner-host" }
 margin = { path = "margin", version = "0.10.0-rc.2" }
 regex = { version = "1.12.4", default-features = false, features = ["std", "unicode"] }
