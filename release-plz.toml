@@ -3,8 +3,8 @@
 
 [[package]]
 name = "snark-dsl"
-release = false
-publish = false
+release = true
+publish = true
 
 [[package]]
 name = "snark-playground"
