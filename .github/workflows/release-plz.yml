@@ -45,15 +45,10 @@ jobs:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      # One-time extraction bootstrap: published crates still point into the
-      # pre-extraction Facet history, where these package manifests had no
-      # workspace root. Keep comparison inside standalone Snark history until
-      # the first release from this repository is published, then restore
-      # fetch-depth: 0.
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 4
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Install Rust toolchain
